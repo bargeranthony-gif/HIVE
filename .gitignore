@@ -12,3 +12,6 @@ build/
 hive.db
 hive.db-*
 backups/
+
+# Legacy browser compatibility environment
+.venv-browser-legacy/
