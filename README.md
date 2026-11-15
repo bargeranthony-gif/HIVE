@@ -51,3 +51,44 @@ Default: `~/.hive/hive.db`. Set `HIVE_HOME` to move HIVE state, for example:
 ## Current limitations
 This is a foundation, not yet a source-code analyzer or agent runtime.
 No repository is cloned, parsed, built, sandboxed, or executed in this version.
+
+
+## Browser Automation
+
+HIVE runs browser automation through an isolated Python environment.
+This keeps Playwright and its browser runtime separate from the main HIVE
+environment.
+
+The browser extra is pinned to Playwright 1.25.2, which is the version
+verified with the legacy browser runtime used on macOS Catalina.
+
+Create the browser environment from the HIVE project directory:
+
+```bash
+python3.10 -m venv .venv-browser-legacy
+.venv-browser-legacy/bin/python -m pip install --upgrade pip
+.venv-browser-legacy/bin/python -m pip install -e '.[browser]'
+```
+
+Install Chromium through HIVE:
+
+```bash
+.venv/bin/hive browser install
+```
+
+Check the browser installation:
+
+```bash
+.venv/bin/hive browser status
+```
+
+Inspect a webpage and save its evidence:
+
+```bash
+.venv/bin/hive browser inspect https://example.com
+```
+
+The browser worker selects `.venv-browser-legacy` automatically when it
+exists. `HIVE_BROWSER_PYTHON` can be set to override that interpreter.
+Do not install the browser extra into the main HIVE environment when using
+this isolated browser configuration.

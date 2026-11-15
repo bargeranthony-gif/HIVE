@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import importlib.metadata
 import json
+import os
 import subprocess
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import hive_home
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WORKER = Path(__file__).with_name("browser_worker.py")
+
+
 def validate_url(url: str) -> str:
     """Accept ordinary HTTP and HTTPS URLs only."""
-    parsed = urlsplit(url.strip())
+    target = url.strip()
+    parsed = urlsplit(target)
 
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Only http:// and https:// URLs are supported.")
@@ -23,111 +26,122 @@ def validate_url(url: str) -> str:
         raise ValueError("A valid hostname is required.")
 
     if parsed.username or parsed.password:
-        raise ValueError("URLs containing embedded credentials are not allowed.")
+        raise ValueError(
+            "URLs containing embedded credentials are not allowed."
+        )
 
-    return url.strip()
+    return target
+
+
+def browser_python() -> Path:
+    """Find the configured or isolated browser Python interpreter."""
+    configured = os.environ.get("HIVE_BROWSER_PYTHON")
+
+    if configured:
+        interpreter = Path(configured).expanduser()
+        if not interpreter.is_file():
+            raise RuntimeError(
+                f"Configured browser Python does not exist: {interpreter}"
+            )
+        return interpreter.absolute()
+
+    if os.name == "nt":
+        legacy = PROJECT_ROOT / ".venv-browser-legacy" / "Scripts" / "python.exe"
+    else:
+        legacy = PROJECT_ROOT / ".venv-browser-legacy" / "bin" / "python"
+
+    if legacy.is_file():
+        return legacy.absolute()
+
+    return Path(sys.executable).absolute()
+
+
+def _run_worker(arguments: list[str]) -> subprocess.CompletedProcess:
+    """Run the isolated browser worker and capture its output."""
+    if not WORKER.is_file():
+        raise RuntimeError(f"Browser worker is missing: {WORKER}")
+
+    command = [
+        str(browser_python()),
+        str(WORKER),
+        *arguments,
+    ]
+
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(details) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Browser worker exceeded its 180-second limit.") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not start browser worker: {exc}") from exc
 
 
 def browser_status() -> dict:
-    """Report whether the optional Playwright package is installed."""
+    """Report the selected browser interpreter and runtime status."""
     try:
-        version = importlib.metadata.version("playwright")
-        installed = True
-    except importlib.metadata.PackageNotFoundError:
-        version = None
-        installed = False
+        result = _run_worker(["status"])
+        data = json.loads(result.stdout)
 
-    return {
-        "installed": installed,
-        "version": version,
-        "browser_runtime": "Check with 'hive browser install'",
-    }
+        return {
+            "installed": data.get("installed", False),
+            "version": data.get("version"),
+            "chromium_installed": data.get("chromium_installed", False),
+            "chromium_executable": data.get("chromium_executable"),
+            "browser_python": str(browser_python()),
+            "browser_runtime": (
+                "Chromium ready"
+                if data.get("chromium_installed")
+                else "Playwright available; Chromium not installed"
+            ),
+        }
+
+    except Exception as exc:
+        return {
+            "installed": False,
+            "version": None,
+            "chromium_installed": False,
+            "browser_python": None,
+            "browser_runtime": f"Unavailable: {exc}",
+        }
 
 
 def install_browser() -> None:
-    """Install the Chromium runtime for the installed Playwright package."""
-    if not browser_status()["installed"]:
-        raise RuntimeError(
-            "Playwright is not installed. Run: "
-            "python -m pip install -e '.[browser]'"
-        )
+    """Install Chromium using the selected browser interpreter."""
+    result = _run_worker(["install"])
 
-    subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium"],
-        check=True,
-    )
+    if result.stdout.strip():
+        print(result.stdout.strip())
 
 
 def inspect_url(url: str, timeout: int = 15000) -> dict:
-    """Inspect a page without submitting forms or intentionally changing state."""
+    """Inspect a webpage through the isolated browser worker."""
     target = validate_url(url)
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Playwright is not installed. Run: "
-            "python -m pip install -e '.[browser]'"
-        ) from exc
+    if timeout <= 0:
+        raise ValueError("Timeout must be positive.")
 
     output_dir = hive_home() / "browser"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    run_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + "-"
-        + uuid.uuid4().hex[:8]
-    )
-    run_dir = output_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
+    result = _run_worker([
+        "inspect",
+        "--url", target,
+        "--timeout", str(timeout),
+        "--output-dir", str(output_dir),
+    ])
 
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                page = browser.new_page()
-                response = page.goto(
-                    target,
-                    wait_until="domcontentloaded",
-                    timeout=timeout,
-                )
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Browser worker returned invalid JSON: {result.stdout[:500]}"
+        ) from exc
 
-                title = page.title()
-                final_url = page.url
-
-                try:
-                    page_text = page.locator("body").inner_text(timeout=5000)
-                except Exception:
-                    page_text = ""
-
-                page_text = page_text[:50000]
-
-                screenshot_path = run_dir / "screenshot.png"
-                page.screenshot(
-                    path=str(screenshot_path),
-                    full_page=True,
-                    timeout=10000,
-                )
-
-                result = {
-                    "requested_url": target,
-                    "final_url": final_url,
-                    "title": title,
-                    "http_status": response.status if response else None,
-                    "text": page_text,
-                    "screenshot": str(screenshot_path),
-                    "captured_at": datetime.now(timezone.utc).isoformat(),
-                }
-
-                evidence_path = run_dir / "evidence.json"
-                evidence_path.write_text(
-                    json.dumps(result, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                result["evidence"] = str(evidence_path)
-                return result
-            finally:
-                browser.close()
-
-    except Exception as exc:
-        raise RuntimeError(f"Browser inspection failed: {exc}") from exc
+    return data

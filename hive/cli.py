@@ -4,7 +4,7 @@ import argparse
 import logging
 
 from . import __version__
-from .browser import browser_status, install_browser, inspect_url
+from .browser import browser_status, install_browser, inspect_url, browser_python
 from .ai import ask, get_status
 from .db import initialize, connect
 from .logging_setup import configure_logging
@@ -196,7 +196,8 @@ def main(argv=None):
             if result["version"]:
                 print(f"Playwright version: {result['version']}")
             else:
-                print("Install with: python -m pip install -e '.[browser]'")
+                print("Install Playwright with the browser interpreter:")
+                print(f"  {browser_python()} -m pip install -e '.[browser]'")
             print(result["browser_runtime"])
 
         elif args.browser_command == "install":
