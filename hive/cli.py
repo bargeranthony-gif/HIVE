@@ -4,6 +4,7 @@ import argparse
 import logging
 
 from . import __version__
+from .browser import browser_status, install_browser, inspect_url
 from .ai import ask, get_status
 from .db import initialize, connect
 from .logging_setup import configure_logging
@@ -38,6 +39,22 @@ def build_parser():
 
     sub.add_parser("init", help="Initialize the local HIVE database")
     sub.add_parser("status", help="Show local HIVE database status")
+
+    browser = sub.add_parser("browser", help="Inspect websites with Playwright")
+    browser_sub = browser.add_subparsers(
+        dest="browser_command", required=True
+    )
+    browser_sub.add_parser("status", help="Check Playwright installation")
+    browser_sub.add_parser("install", help="Install the Chromium browser runtime")
+    browser_inspect = browser_sub.add_parser(
+        "inspect", help="Inspect a webpage and save local evidence"
+    )
+    browser_inspect.add_argument("url")
+    browser_inspect.add_argument(
+        "--timeout", type=int, default=15000,
+        help="Navigation timeout in milliseconds (default: 15000)"
+    )
+
 
     ask_parser = sub.add_parser(
         "ask",
@@ -171,6 +188,36 @@ def main(argv=None):
             f"Repositories: {repos}\n"
             f"Capabilities: {caps}"
         )
+
+    elif args.command == "browser":
+        if args.browser_command == "status":
+            result = browser_status()
+            print(f"Playwright installed: {'Yes' if result['installed'] else 'No'}")
+            if result["version"]:
+                print(f"Playwright version: {result['version']}")
+            else:
+                print("Install with: python -m pip install -e '.[browser]'")
+            print(result["browser_runtime"])
+
+        elif args.browser_command == "install":
+            try:
+                install_browser()
+                print("Chromium browser runtime installed.")
+            except Exception as exc:
+                parser.exit(1, f"Browser installation failed: {exc}\\n")
+
+        elif args.browser_command == "inspect":
+            try:
+                result = inspect_url(args.url, timeout=args.timeout)
+                print(f"Title: {result['title']}")
+                print(f"Final URL: {result['final_url']}")
+                print(f"HTTP status: {result['http_status']}")
+                print(f"Screenshot: {result['screenshot']}")
+                print(f"Evidence: {result['evidence']}")
+                print("\\nPage text (first 50,000 characters):\\n")
+                print(result["text"])
+            except (ValueError, RuntimeError) as exc:
+                parser.exit(1, f"Browser inspection failed: {exc}\\n")
 
     elif args.command == "ask":
         try:
