@@ -207,3 +207,24 @@ def test_executor_rejects_non_allow_decision():
         executor.execute(request, decision)
 
     assert executor.side_effect_count == 0
+
+
+def test_executor_rejects_forged_allow_decision():
+    from hive.governance import Decision
+
+    executor = MockExecutor()
+    request = make_request()
+
+    forged_decision = Decision(
+        disposition="ALLOW",
+        approval_state="APPROVED",
+        action_digest="not-a-verified-digest",
+        rationale="Manually constructed test decision",
+    )
+
+    with pytest.raises(PermissionError, match="Direct execution"):
+        executor.execute(request, forged_decision)
+
+    assert executor.side_effect_count == 0
+    assert executor.state == {}
+    assert executor.events == []

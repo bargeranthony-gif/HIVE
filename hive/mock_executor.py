@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from datetime import datetime
+
 from .governance import (
     ActionRequest,
     Decision,
     ExecutionResult,
+    GovernanceGate,
 )
 
 
@@ -22,8 +24,59 @@ class MockExecutor:
         request: ActionRequest,
         decision: Decision,
     ) -> ExecutionResult:
+        """Reject direct execution based on caller-supplied decisions."""
         if decision.disposition != "ALLOW":
-            raise PermissionError("Execution blocked: decision is not ALLOW.")
+            raise PermissionError(
+                "Execution blocked: decision is not ALLOW."
+            )
+
+        raise PermissionError(
+            "Direct execution using a supplied Decision is prohibited. "
+            "Use execute_if_allowed() so authorization is evaluated "
+            "at the execution boundary."
+        )
+
+    def execute_authorized(
+        self,
+        gate: GovernanceGate,
+        source,
+        request: ActionRequest,
+        approval=None,
+        *,
+        now: datetime | None = None,
+    ) -> Decision | ExecutionResult:
+        """Evaluate authorization immediately before the mock side effect."""
+
+        # Require the actual gate implementation, not an object that merely
+        # imitates its evaluate() method.
+        if type(gate) is not GovernanceGate:
+            raise TypeError("A genuine GovernanceGate instance is required.")
+
+        decision = gate.evaluate(
+            source,
+            request,
+            approval,
+            now=now,
+        )
+
+        if decision.disposition != "ALLOW":
+            return decision
+
+        # Defense in depth: ensure the decision covers this exact request.
+        expected_digest = gate.digest(request)
+        if decision.action_digest != expected_digest:
+            raise PermissionError(
+                "Execution blocked: action digest does not match request."
+            )
+
+        return self._execute_allowed(request, decision)
+
+    def _execute_allowed(
+        self,
+        request: ActionRequest,
+        decision: Decision,
+    ) -> ExecutionResult:
+        """Internal execution path, reached only after gate evaluation."""
 
         if decision.action_digest in self._completed:
             previous = self._completed[decision.action_digest]
@@ -60,18 +113,19 @@ class MockExecutor:
 
 
 def execute_if_allowed(
-    gate,
+    gate: GovernanceGate,
     executor: MockExecutor,
     source,
     request: ActionRequest,
     approval=None,
     *,
-    now=None,
+    now: datetime | None = None,
 ):
-    """Evaluate first; invoke the mock executor only on ALLOW."""
-    decision = gate.evaluate(source, request, approval, now=now)
-
-    if decision.disposition != "ALLOW":
-        return decision
-
-    return executor.execute(request, decision)
+    """Evaluate authorization at the executor boundary before execution."""
+    return executor.execute_authorized(
+        gate,
+        source,
+        request,
+        approval,
+        now=now,
+    )
