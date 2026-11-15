@@ -51,4 +51,8 @@ def initialize(path: Path | None = None) -> Path:
     initialize_inspector(db_path)
     initialize_graph(db_path)
 
+    # Import locally to avoid circular module imports.
+    from .governance_store import initialize_governance
+    initialize_governance(db_path)
+
     return db_path
