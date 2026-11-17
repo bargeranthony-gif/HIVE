@@ -151,11 +151,12 @@ def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]
     ]
 
 
-def evaluate_capabilities(
+def evaluate_capability_records(
     required_capabilities: Iterable[str],
+    records: Iterable[CapabilityRecord],
     minimum_evidence_level: str = DEFAULT_MINIMUM_EVIDENCE,
-    repository_id: int | None = None,
 ) -> CapabilityEvaluation:
+    """Evaluate required capabilities against an existing record snapshot."""
     _validate_evidence_level(minimum_evidence_level)
 
     if isinstance(required_capabilities, (str, bytes)):
@@ -176,11 +177,17 @@ def evaluate_capabilities(
     if len(normalized) != len(set(normalized)):
         raise ValueError("Duplicate required capability names are not allowed")
 
-    records = get_capabilities(repository_id)
+    try:
+        record_snapshot = tuple(records)
+    except TypeError as exc:
+        raise ValueError("Capability records must be iterable") from exc
+
+    if not all(isinstance(record, CapabilityRecord) for record in record_snapshot):
+        raise ValueError("Every capability record must be a CapabilityRecord")
 
     evidence_by_name: dict[str, str] = {}
 
-    for record in records:
+    for record in record_snapshot:
         current = evidence_by_name.get(record.name)
         if (
             current is None
@@ -214,4 +221,19 @@ def evaluate_capabilities(
         missing_capabilities=tuple(missing),
         insufficient_capabilities=tuple(insufficient),
         evidence_by_capability=tuple(evidence),
+    )
+
+
+def evaluate_capabilities(
+    required_capabilities: Iterable[str],
+    minimum_evidence_level: str = DEFAULT_MINIMUM_EVIDENCE,
+    repository_id: int | None = None,
+) -> CapabilityEvaluation:
+    """Evaluate capabilities using the current database records."""
+    records = get_capabilities(repository_id)
+
+    return evaluate_capability_records(
+        required_capabilities,
+        records,
+        minimum_evidence_level,
     )
