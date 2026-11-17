@@ -221,3 +221,115 @@ def test_audit_verification_detects_tampering(tmp_path):
     result = verify_audit_chain(db)
     assert result["valid"] is False
     assert result["error"] == "Event-hash mismatch"
+
+
+def test_existing_governance_database_upgrades_to_plan_migration(tmp_path):
+    from hive.governance_store import (
+        GOVERNANCE_SCHEMA,
+        initialize_governance,
+    )
+
+    db = tmp_path / "legacy-hive.db"
+
+    # Simulate a database created by the original 001 governance migration.
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.executescript(
+            "BEGIN IMMEDIATE;\n"
+            + GOVERNANCE_SCHEMA
+            + """
+            INSERT INTO schema_migrations (migration_id, applied_at)
+            VALUES ('001_governance_store', '2026-01-01T00:00:00+00:00');
+            COMMIT;
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO governance_policies (
+                policy_id, policy_version, policy_hash, policy_json, created_at
+            )
+            VALUES ('legacy-policy', '1', 'legacy-hash', '{}', '2026-01-01')
+            """
+        )
+
+    initialize_governance(db)
+
+    with sqlite3.connect(db) as conn:
+        migrations = {
+            row[0]
+            for row in conn.execute(
+                "SELECT migration_id FROM schema_migrations"
+            )
+        }
+        policy = conn.execute(
+            """
+            SELECT policy_id, policy_version, policy_hash
+            FROM governance_policies
+            WHERE policy_id = 'legacy-policy'
+            """
+        ).fetchone()
+        plan_table = conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name = 'plans'
+            """
+        ).fetchone()
+
+    assert migrations == {
+        "001_governance_store",
+        "002_plan_persistence",
+    }
+    assert policy == ("legacy-policy", "1", "legacy-hash")
+    assert plan_table == ("plans",)
+
+
+def test_failed_migration_rolls_back_schema_and_ledger(tmp_path):
+    from hive.governance_store import _apply_migration
+
+    db = tmp_path / "migration-rollback.db"
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+
+        with pytest.raises(sqlite3.OperationalError):
+            _apply_migration(
+                conn,
+                "003_test_failure",
+                """
+                CREATE TABLE migration_partial (
+                    id INTEGER PRIMARY KEY
+                );
+                THIS IS NOT VALID SQL;
+                """,
+            )
+
+        partial_table = conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name = 'migration_partial'
+            """
+        ).fetchone()
+        migration_record = conn.execute(
+            """
+            SELECT 1 FROM schema_migrations
+            WHERE migration_id = '003_test_failure'
+            """
+        ).fetchone()
+
+        assert partial_table is None
+        assert migration_record is None
+        assert conn.in_transaction is False

@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 
+from dataclasses import dataclass
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,17 +14,14 @@ from typing import Any, Mapping
 from .config import database_path
 from .db import connect
 from .governance import Approval, Decision, ExecutionResult, ActionRequest, SourceRecord
+from .plan_identity import PlanIdentity
 
 
 MIGRATION_ID = "001_governance_store"
+PLAN_MIGRATION_ID = "002_plan_persistence"
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    migration_id TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL
-);
-
+GOVERNANCE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS governance_policies (
     policy_id TEXT NOT NULL,
     policy_version TEXT NOT NULL,
@@ -102,6 +100,106 @@ END;
 """
 
 
+PLAN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS plans (
+    plan_id TEXT PRIMARY KEY,
+    repository_id INTEGER NOT NULL
+        REFERENCES repositories(id) ON DELETE RESTRICT,
+    identity_digest TEXT NOT NULL
+        CHECK (length(identity_digest) = 64),
+    identity_schema_version INTEGER NOT NULL
+        CHECK (identity_schema_version > 0),
+    canonical_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (
+            status IN (
+                'draft',
+                'approved',
+                'executing',
+                'completed',
+                'failed',
+                'cancelled',
+                'stale'
+            )
+        ),
+    created_at TEXT NOT NULL,
+    UNIQUE (repository_id, identity_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_repository_status
+    ON plans(repository_id, status);
+
+CREATE TRIGGER IF NOT EXISTS plans_identity_no_update
+BEFORE UPDATE OF
+    plan_id,
+    repository_id,
+    identity_digest,
+    identity_schema_version,
+    canonical_json,
+    created_at
+ON plans
+BEGIN
+    SELECT RAISE(ABORT, 'plan identity fields are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS plans_no_delete
+BEFORE DELETE ON plans
+BEGIN
+    SELECT RAISE(ABORT, 'stored plans cannot be deleted');
+END;
+"""
+
+
+def _apply_migration(
+    conn: sqlite3.Connection,
+    migration_id: str,
+    schema: str,
+) -> None:
+    """Apply one schema migration and record it atomically."""
+    conn.execute("BEGIN IMMEDIATE")
+
+    try:
+        existing = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (migration_id,),
+        ).fetchone()
+
+        if existing is not None:
+            conn.commit()
+            return
+
+        # Execute complete SQL statements individually so DDL remains
+        # inside the transaction. This also handles trigger bodies.
+        statement = ""
+        for line in schema.splitlines():
+            statement += line + "\n"
+
+            if sqlite3.complete_statement(statement):
+                if statement.strip():
+                    conn.execute(statement)
+                statement = ""
+
+        if statement.strip():
+            raise ValueError(
+                f"Incomplete SQL statement in migration: {migration_id}"
+            )
+
+        conn.execute(
+            """
+            INSERT INTO schema_migrations (migration_id, applied_at)
+            VALUES (?, CURRENT_TIMESTAMP)
+            """,
+            (migration_id,),
+        )
+
+        conn.commit()
+
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -147,22 +245,231 @@ def _open(path: Path | None = None) -> sqlite3.Connection:
 
 
 def initialize_governance(path: Path | None = None) -> Path:
-    """Create governance storage tables without replacing existing data."""
+    """Apply governance and plan migrations without replacing existing data."""
     db_path = path or database_path()
 
     with closing(_open(db_path)) as conn:
-        conn.executescript(SCHEMA)
+        # The migration ledger must exist before versioned migrations run.
         conn.execute(
             """
-            INSERT OR IGNORE INTO schema_migrations
-                (migration_id, applied_at)
-            VALUES (?, ?)
-            """,
-            (MIGRATION_ID, _timestamp(_now())),
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
         )
-        conn.commit()
+
+        _apply_migration(conn, MIGRATION_ID, GOVERNANCE_SCHEMA)
+        _apply_migration(conn, PLAN_MIGRATION_ID, PLAN_SCHEMA)
 
     return db_path
+
+
+
+@dataclass(frozen=True)
+class PlanRecord:
+    """Persisted plan identity and its independently managed status."""
+
+    plan_id: str
+    repository_id: int
+    identity_digest: str
+    identity_schema_version: int
+    canonical_json: str
+    status: str
+    created_at: str
+
+    @property
+    def snapshot(self) -> dict[str, Any]:
+        """Return a fresh copy of the immutable identity snapshot."""
+        return json.loads(self.canonical_json)
+
+
+def _validate_plan_identity(identity: PlanIdentity) -> int:
+    """Validate snapshot structure, canonical encoding, and digest."""
+    if not isinstance(identity, PlanIdentity):
+        raise TypeError("identity must be a PlanIdentity")
+
+    if (
+        isinstance(identity.repository_id, bool)
+        or not isinstance(identity.repository_id, int)
+        or identity.repository_id <= 0
+    ):
+        raise ValueError("Plan identity has an invalid repository_id")
+
+    if not isinstance(identity.repository_url, str) or not identity.repository_url:
+        raise ValueError("Plan identity has an invalid repository_url")
+
+    if not isinstance(identity.canonical_json, str):
+        raise ValueError("Plan identity canonical_json must be a string")
+
+    try:
+        snapshot = json.loads(identity.canonical_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Plan identity contains invalid JSON") from exc
+
+    if not isinstance(snapshot, dict):
+        raise ValueError("Plan identity snapshot must be a JSON object")
+
+    canonical = _json(snapshot)
+    if canonical != identity.canonical_json:
+        raise ValueError("Plan identity JSON is not canonically encoded")
+
+    expected_digest = hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+    if identity.digest != expected_digest:
+        raise ValueError("Plan identity digest does not match its snapshot")
+
+    repository = snapshot.get("repository")
+    if not isinstance(repository, dict):
+        raise ValueError("Plan identity snapshot has no repository object")
+
+    if (
+        repository.get("id") != identity.repository_id
+        or repository.get("url") != identity.repository_url
+    ):
+        raise ValueError("Plan identity repository fields do not match snapshot")
+
+    schema_version = snapshot.get("identity_schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version <= 0
+    ):
+        raise ValueError("Plan identity has an invalid schema version")
+
+    return schema_version
+
+
+def store_plan_identity(
+    identity: PlanIdentity,
+    path: Path | None = None,
+) -> str:
+    """
+    Persist an immutable plan identity.
+
+    Repeated storage of the same repository/digest is idempotent.
+    This operation does not approve or execute a plan.
+    """
+    schema_version = _validate_plan_identity(identity)
+    created_at = _timestamp(_now())
+    proposed_plan_id = str(uuid.uuid4())
+
+    with closing(_open(path)) as conn:
+        with conn:
+            # Serialize competing writers before checking for an existing plan.
+            conn.execute("BEGIN IMMEDIATE")
+
+            existing = conn.execute(
+                """
+                SELECT
+                    plan_id,
+                    canonical_json,
+                    identity_schema_version
+                FROM plans
+                WHERE repository_id = ? AND identity_digest = ?
+                """,
+                (identity.repository_id, identity.digest),
+            ).fetchone()
+
+            if existing is not None:
+                if (
+                    existing["canonical_json"] != identity.canonical_json
+                    or existing["identity_schema_version"] != schema_version
+                ):
+                    raise ValueError(
+                        "Existing plan identity conflicts with submitted snapshot"
+                    )
+
+                return existing["plan_id"]
+
+            repository = conn.execute(
+                "SELECT id FROM repositories WHERE id = ?",
+                (identity.repository_id,),
+            ).fetchone()
+
+            if repository is None:
+                raise ValueError(
+                    f"Repository not found: {identity.repository_id}"
+                )
+
+            conn.execute(
+                """
+                INSERT INTO plans (
+                    plan_id,
+                    repository_id,
+                    identity_digest,
+                    identity_schema_version,
+                    canonical_json,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'draft', ?)
+                """,
+                (
+                    proposed_plan_id,
+                    identity.repository_id,
+                    identity.digest,
+                    schema_version,
+                    identity.canonical_json,
+                    created_at,
+                ),
+            )
+
+            _append_audit(
+                conn,
+                "PLAN_IDENTITY_RECORDED",
+                "plan",
+                proposed_plan_id,
+                {
+                    "repository_id": identity.repository_id,
+                    "identity_digest": identity.digest,
+                    "identity_schema_version": schema_version,
+                    "status": "draft",
+                },
+            )
+
+    return proposed_plan_id
+
+
+def get_plan(
+    plan_id: str,
+    path: Path | None = None,
+) -> PlanRecord | None:
+    """Retrieve a persisted plan by its unique ID."""
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise ValueError("plan_id must be a non-empty string")
+
+    with closing(_open(path)) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                plan_id,
+                repository_id,
+                identity_digest,
+                identity_schema_version,
+                canonical_json,
+                status,
+                created_at
+            FROM plans
+            WHERE plan_id = ?
+            """,
+            (plan_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return PlanRecord(
+        plan_id=row["plan_id"],
+        repository_id=row["repository_id"],
+        identity_digest=row["identity_digest"],
+        identity_schema_version=row["identity_schema_version"],
+        canonical_json=row["canonical_json"],
+        status=row["status"],
+        created_at=row["created_at"],
+    )
 
 
 def _append_audit(
