@@ -19,6 +19,7 @@ from .plan_identity import PlanIdentity
 
 MIGRATION_ID = "001_governance_store"
 PLAN_MIGRATION_ID = "002_plan_persistence"
+LIFECYCLE_MIGRATION_ID = "003_lifecycle_relationships"
 
 
 GOVERNANCE_SCHEMA = """
@@ -150,6 +151,34 @@ END;
 """
 
 
+LIFECYCLE_SCHEMA = """
+ALTER TABLE action_approvals
+    ADD COLUMN plan_id TEXT REFERENCES plans(plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE governance_decisions
+    ADD COLUMN plan_id TEXT REFERENCES plans(plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE execution_records
+    ADD COLUMN plan_id TEXT REFERENCES plans(plan_id) ON DELETE RESTRICT;
+
+ALTER TABLE execution_records
+    ADD COLUMN decision_id TEXT
+    REFERENCES governance_decisions(decision_id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_action_approvals_plan
+    ON action_approvals(plan_id);
+
+CREATE INDEX IF NOT EXISTS idx_governance_decisions_plan
+    ON governance_decisions(plan_id);
+
+CREATE INDEX IF NOT EXISTS idx_execution_records_plan
+    ON execution_records(plan_id);
+
+CREATE INDEX IF NOT EXISTS idx_execution_records_decision
+    ON execution_records(decision_id);
+"""
+
+
 def _apply_migration(
     conn: sqlite3.Connection,
     migration_id: str,
@@ -261,6 +290,7 @@ def initialize_governance(path: Path | None = None) -> Path:
 
         _apply_migration(conn, MIGRATION_ID, GOVERNANCE_SCHEMA)
         _apply_migration(conn, PLAN_MIGRATION_ID, PLAN_SCHEMA)
+        _apply_migration(conn, LIFECYCLE_MIGRATION_ID, LIFECYCLE_SCHEMA)
 
     return db_path
 
@@ -585,6 +615,8 @@ def store_policy(
 def store_approval(
     approval: Approval,
     path: Path | None = None,
+    *,
+    plan_id: str | None = None,
 ) -> None:
     issued_at = _timestamp(approval.issued_at)
     expires_at = _timestamp(approval.expires_at)
@@ -592,13 +624,22 @@ def store_approval(
 
     with closing(_open(path)) as conn:
         with conn:
+            if plan_id is not None:
+                plan = conn.execute(
+                    "SELECT 1 FROM plans WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchone()
+                if plan is None:
+                    raise ValueError("Cannot store approval for an unknown plan")
+
             conn.execute(
                 """
                 INSERT INTO action_approvals (
                     approval_id, approver_id, action_digest, scope,
-                    issued_at, expires_at, revoked, issuer_type, recorded_at
+                    issued_at, expires_at, revoked, issuer_type,
+                    recorded_at, plan_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     approval.approval_id,
@@ -610,6 +651,7 @@ def store_approval(
                     int(approval.revoked),
                     approval.issuer_type,
                     recorded_at,
+                    plan_id,
                 ),
             )
             _append_audit(
@@ -625,9 +667,9 @@ def store_approval(
                     "expires_at": expires_at,
                     "revoked": approval.revoked,
                     "issuer_type": approval.issuer_type,
+                    "plan_id": plan_id,
                 },
             )
-
 
 def get_approval(
     approval_id: str,
@@ -680,6 +722,35 @@ def revoke_approval(
 
             return cursor.rowcount == 1
 
+def get_plan_approval(
+    approval_id: str,
+    plan_id: str,
+    path: Path | None = None,
+) -> Approval | None:
+    """Retrieve an approval only when it belongs to the specified plan."""
+    with closing(_open(path)) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM action_approvals
+            WHERE approval_id = ? AND plan_id = ?
+            """,
+            (approval_id, plan_id),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return Approval(
+        approval_id=row["approval_id"],
+        approver_id=row["approver_id"],
+        action_digest=row["action_digest"],
+        scope=row["scope"],
+        issued_at=datetime.fromisoformat(row["issued_at"]),
+        expires_at=datetime.fromisoformat(row["expires_at"]),
+        revoked=bool(row["revoked"]),
+        issuer_type=row["issuer_type"],
+    )
 
 def record_decision(
     decision: Decision,
@@ -687,6 +758,8 @@ def record_decision(
     source: SourceRecord,
     approval: Approval | None = None,
     path: Path | None = None,
+    *,
+    plan_id: str | None = None,
 ) -> str:
     decision_id = str(uuid.uuid4())
     recorded_at = _timestamp(_now())
@@ -713,15 +786,36 @@ def record_decision(
 
     with closing(_open(path)) as conn:
         with conn:
+            if plan_id is not None:
+                plan = conn.execute(
+                    "SELECT 1 FROM plans WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchone()
+                if plan is None:
+                    raise ValueError("Cannot record decision for an unknown plan")
+
+                if approval_id is not None:
+                    linked_approval = conn.execute(
+                        """
+                        SELECT 1 FROM action_approvals
+                        WHERE approval_id = ? AND plan_id = ?
+                        """,
+                        (approval_id, plan_id),
+                    ).fetchone()
+                    if linked_approval is None:
+                        raise ValueError(
+                            "Approval does not belong to the specified plan"
+                        )
+
             conn.execute(
                 """
                 INSERT INTO governance_decisions (
                     decision_id, disposition, approval_state, action_digest,
                     rationale, policy_id, policy_version,
                     source_snapshot_json, request_snapshot_json,
-                    approval_id, recorded_at
+                    approval_id, recorded_at, plan_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     decision_id,
@@ -735,6 +829,7 @@ def record_decision(
                     request_json,
                     approval_id,
                     recorded_at,
+                    plan_id,
                 ),
             )
 
@@ -750,29 +845,63 @@ def record_decision(
                     "policy_id": decision.policy_id,
                     "policy_version": decision.policy_version,
                     "approval_id": approval_id,
+                    "plan_id": plan_id,
                 },
             )
 
     return decision_id
 
-
 def record_execution(
     result: ExecutionResult,
     action_digest: str | None = None,
     path: Path | None = None,
+    *,
+    plan_id: str | None = None,
+    decision_id: str | None = None,
 ) -> None:
+    if (plan_id is None) != (decision_id is None):
+        raise ValueError(
+            "plan_id and decision_id must be supplied together"
+        )
+
     recorded_at = _timestamp(_now())
 
     with closing(_open(path)) as conn:
         with conn:
+            if plan_id is not None:
+                decision = conn.execute(
+                    """
+                    SELECT disposition, action_digest
+                    FROM governance_decisions
+                    WHERE decision_id = ? AND plan_id = ?
+                    """,
+                    (decision_id, plan_id),
+                ).fetchone()
+
+                if decision is None:
+                    raise ValueError(
+                        "Decision does not belong to the specified plan"
+                    )
+                if decision["disposition"] != "ALLOW":
+                    raise ValueError(
+                        "Execution cannot be linked to a non-ALLOW decision"
+                    )
+                if (
+                    action_digest is not None
+                    and decision["action_digest"] != action_digest
+                ):
+                    raise ValueError(
+                        "Execution digest does not match its decision"
+                    )
+
             conn.execute(
                 """
                 INSERT INTO execution_records (
                     result_id, target, resulting_status,
                     side_effect_count, replayed, execution_type,
-                    action_digest, recorded_at
+                    action_digest, recorded_at, plan_id, decision_id
                 )
-                VALUES (?, ?, ?, ?, ?, 'MOCK', ?, ?)
+                VALUES (?, ?, ?, ?, ?, 'MOCK', ?, ?, ?, ?)
                 """,
                 (
                     result.result_id,
@@ -782,6 +911,8 @@ def record_execution(
                     int(result.replayed),
                     action_digest,
                     recorded_at,
+                    plan_id,
+                    decision_id,
                 ),
             )
 
@@ -797,9 +928,10 @@ def record_execution(
                     "replayed": result.replayed,
                     "execution_type": "MOCK",
                     "action_digest": action_digest,
+                    "plan_id": plan_id,
+                    "decision_id": decision_id,
                 },
             )
-
 
 def verify_audit_chain(path: Path | None = None) -> dict[str, Any]:
     """Verify event hashes and links in sequence order."""

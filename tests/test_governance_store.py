@@ -285,6 +285,7 @@ def test_existing_governance_database_upgrades_to_plan_migration(tmp_path):
     assert migrations == {
         "001_governance_store",
         "002_plan_persistence",
+        "003_lifecycle_relationships",
     }
     assert policy == ("legacy-policy", "1", "legacy-hash")
     assert plan_table == ("plans",)
