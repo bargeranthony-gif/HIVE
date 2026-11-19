@@ -175,7 +175,7 @@ def test_ai_status_command(monkeypatch, capsys):
     assert "Model loaded: Yes" in output
 
 
-def test_ai_status_fails_when_model_missing(monkeypatch):
+def test_ai_status_fails_when_model_missing(monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "get_status",
@@ -192,3 +192,6 @@ def test_ai_status_fails_when_model_missing(monkeypatch):
         cli.main(["ai", "status"])
 
     assert exc.value.code == 1
+    error_output = capsys.readouterr().err
+    assert error_output.endswith("\n")
+    assert "\\n" not in error_output
