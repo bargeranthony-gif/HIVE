@@ -100,9 +100,9 @@ def add_capability(
         return int(cursor.lastrowid)
 
 
-def list_capabilities() -> list[dict]:
-    """List capability records without opening SQLite for writes."""
-    with connect(readonly=True) as conn:
+def list_capabilities(*, readonly: bool = False) -> list[dict]:
+    """List capability records."""
+    with connect(readonly=readonly) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -123,7 +123,7 @@ def list_capabilities() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]:
+def get_capabilities(repository_id: int | None = None, *, readonly: bool = False) -> list[CapabilityRecord]:
     query = """
         SELECT id, repository_id, name, description, evidence_level, evidence
         FROM capabilities
@@ -136,7 +136,7 @@ def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]
 
     query += " ORDER BY id"
 
-    with connect(readonly=True) as conn:
+    with connect(readonly=readonly) as conn:
         rows = conn.execute(query, params).fetchall()
 
     return [
