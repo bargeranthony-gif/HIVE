@@ -14,7 +14,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-browser = ["playwright==1.25.2"]
+browser = ["playwright==1.65.2"]
 
 [project.scripts]
 hive = "hive.cli:main"
