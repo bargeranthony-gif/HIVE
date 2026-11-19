@@ -213,7 +213,7 @@ def main(argv=None):
         if not db_path.is_file():
             parser.exit(
                 1,
-                f"HIVE database not initialized: {db_path}. Run 'hive init' first.\\n",
+                f"HIVE database not initialized: {db_path}. Run 'hive init' first.\n",
             )
 
     if args.command == "init":
@@ -252,7 +252,7 @@ def main(argv=None):
                 install_browser()
                 print("Chromium browser runtime installed.")
             except Exception as exc:
-                parser.exit(1, f"Browser installation failed: {exc}\\n")
+                parser.exit(1, f"Browser installation failed: {exc}\n")
 
         elif args.browser_command == "inspect":
             try:
@@ -262,22 +262,22 @@ def main(argv=None):
                 print(f"HTTP status: {result['http_status']}")
                 print(f"Screenshot: {result['screenshot']}")
                 print(f"Evidence: {result['evidence']}")
-                print("\\nPage text (first 50,000 characters):\\n")
+                print("\nPage text (first 50,000 characters):\n")
                 print(result["text"])
             except (ValueError, RuntimeError) as exc:
-                parser.exit(1, f"Browser inspection failed: {exc}\\n")
+                parser.exit(1, f"Browser inspection failed: {exc}\n")
 
     elif args.command == "ask":
         try:
             print(ask(" ".join(args.prompt)))
         except Exception as exc:
-            parser.exit(1, f"AI request failed: {exc}\\n")
+            parser.exit(1, f"AI request failed: {exc}\n")
 
     elif args.command == "ai" and args.ai_command == "status":
         try:
             result = get_status()
         except Exception as exc:
-            parser.exit(1, f"AI status check failed: {exc}\\n")
+            parser.exit(1, f"AI status check failed: {exc}\n")
 
         print("AI provider: llama.cpp")
         print(f"Server: {'Available' if result['available'] else 'Unavailable'}")
@@ -291,7 +291,7 @@ def main(argv=None):
                 print(f"  {model}")
 
         if not result["model_loaded"]:
-            parser.exit(1, "Configured model was not found on the AI server.\\n")
+            parser.exit(1, "Configured model was not found on the AI server.\n")
 
     elif args.command == "inspect":
         initialize()
