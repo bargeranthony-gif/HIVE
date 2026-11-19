@@ -66,6 +66,30 @@ def _validate_evidence_level(level: str) -> None:
         )
 
 
+def _normalize_required_capabilities(
+    required_capabilities: Iterable[str],
+) -> tuple[str, ...]:
+    """Validate and normalize required names before accessing external state."""
+    if isinstance(required_capabilities, (str, bytes)):
+        raise ValueError("Required capabilities must be an iterable of names")
+
+    try:
+        required = tuple(required_capabilities)
+    except TypeError as exc:
+        raise ValueError("Required capabilities must be iterable") from exc
+
+    normalized: list[str] = []
+    for name in required:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Required capability names must be non-empty strings")
+        normalized.append(name.strip())
+
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("Duplicate required capability names are not allowed")
+
+    return tuple(normalized)
+
+
 def add_capability(
     repository_id: int,
     name: str,
@@ -100,8 +124,9 @@ def add_capability(
         return int(cursor.lastrowid)
 
 
-def list_capabilities() -> list[dict]:
-    with connect() as conn:
+def list_capabilities(*, readonly: bool = False) -> list[dict]:
+    """List capability records."""
+    with connect(readonly=readonly) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -122,7 +147,7 @@ def list_capabilities() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]:
+def get_capabilities(repository_id: int | None = None, *, readonly: bool = False) -> list[CapabilityRecord]:
     query = """
         SELECT id, repository_id, name, description, evidence_level, evidence
         FROM capabilities
@@ -135,7 +160,7 @@ def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]
 
     query += " ORDER BY id"
 
-    with connect() as conn:
+    with connect(readonly=readonly) as conn:
         rows = conn.execute(query, params).fetchall()
 
     return [
@@ -159,23 +184,7 @@ def evaluate_capability_records(
     """Evaluate required capabilities against an existing record snapshot."""
     _validate_evidence_level(minimum_evidence_level)
 
-    if isinstance(required_capabilities, (str, bytes)):
-        raise ValueError("Required capabilities must be an iterable of names")
-
-    try:
-        required = tuple(required_capabilities)
-    except TypeError as exc:
-        raise ValueError("Required capabilities must be iterable") from exc
-
-    normalized: list[str] = []
-
-    for name in required:
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Required capability names must be non-empty strings")
-        normalized.append(name.strip())
-
-    if len(normalized) != len(set(normalized)):
-        raise ValueError("Duplicate required capability names are not allowed")
+    normalized = _normalize_required_capabilities(required_capabilities)
 
     try:
         record_snapshot = tuple(records)
@@ -230,10 +239,15 @@ def evaluate_capabilities(
     repository_id: int | None = None,
 ) -> CapabilityEvaluation:
     """Evaluate capabilities using the current database records."""
+    # Reject invalid requests before opening the database. This keeps input
+    # validation deterministic even when HIVE has not yet been initialized.
+    _validate_evidence_level(minimum_evidence_level)
+    normalized = _normalize_required_capabilities(required_capabilities)
+
     records = get_capabilities(repository_id)
 
     return evaluate_capability_records(
-        required_capabilities,
+        normalized,
         records,
         minimum_evidence_level,
     )

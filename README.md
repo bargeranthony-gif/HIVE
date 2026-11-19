@@ -44,6 +44,16 @@ metadata; it does not clone or execute downloaded code.
 
 HIVE must not promote a claim to a verified level without recorded evidence.
 
+## Local AI model identifier
+
+The HIVE provider sends the value of `HIVE_LLM_MODEL` in OpenAI-compatible
+chat requests and checks the server's `/v1/models` response when running
+`hive ai status`. The advertised model ID must match that configured value.
+The universal installer sets the llama.cpp server alias to the same model
+filename so the generated launchers and HIVE configuration agree. If you
+start llama.cpp manually, use `--alias` with the configured
+`HIVE_LLM_MODEL` value.
+
 ## Data location
 Default: `~/.hive/hive.db`. Set `HIVE_HOME` to move HIVE state, for example:
 `export HIVE_HOME="/path/to/external-ssd/HIVE"`
@@ -92,3 +102,21 @@ The browser worker selects `.venv-browser-legacy` automatically when it
 exists. `HIVE_BROWSER_PYTHON` can be set to override that interpreter.
 Do not install the browser extra into the main HIVE environment when using
 this isolated browser configuration.
+
+
+## Read-only inventory and status
+
+Use the global `--read-only` option before a supported status or inventory
+command to guarantee that the command does not initialize HIVE state, create
+log files, or write to SQLite. The database must already exist:
+
+```bash
+hive --read-only status
+hive --read-only repo list
+hive --read-only capability list
+hive --read-only graph show 1
+```
+
+Without `--read-only`, existing command behavior is preserved, including
+normal initialization and logging. The option is rejected for commands that
+can modify state.

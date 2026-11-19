@@ -7,6 +7,7 @@ from . import __version__
 from .browser import browser_status, install_browser, inspect_url, browser_python
 from .ai import ask, get_status
 from .db import initialize, connect
+from .config import database_path
 from .logging_setup import configure_logging
 from .repositories import add_repository, list_repositories
 from .capabilities import add_capability, list_capabilities
@@ -33,6 +34,11 @@ def build_parser():
         "--version",
         action="version",
         version=f"HIVE {__version__}"
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Run a supported inventory/status query without creating or modifying HIVE state",
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -164,17 +170,66 @@ def build_parser():
     return parser
 
 
+def _supports_read_only_command(args) -> bool:
+    """Return whether a parsed command supports the explicit --read-only option."""
+    if args.command == "status":
+        return True
+    if args.command == "browser" and args.browser_command == "status":
+        return True
+    if args.command == "ai" and args.ai_command == "status":
+        return True
+    if args.command == "repo" and args.repo_command == "list":
+        return True
+    if args.command == "capability" and args.cap_command == "list":
+        return True
+    if args.command == "graph" and args.graph_command in {
+        "show",
+        "dependencies",
+        "dependents",
+        "recursive-dependencies",
+        "recursive-dependents",
+        "cycles",
+    }:
+        return True
+    return False
+
+
+def _requires_existing_database(args) -> bool:
+    """Return whether a read-only command queries the local SQLite registry."""
+    if args.command in {"status", "repo", "capability"}:
+        return args.command == "status" or (
+            args.command == "repo" and args.repo_command == "list"
+        ) or (
+            args.command == "capability" and args.cap_command == "list"
+        )
+    return args.command == "graph" and _supports_read_only_command(args)
+
+
 def main(argv=None):
-    configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.read_only and not _supports_read_only_command(args):
+        parser.error("--read-only is supported only with status, browser status, ai status, repo list, capability list, and graph query commands")
+
+    read_only = bool(args.read_only)
+    if not read_only:
+        configure_logging()
+
+    if read_only and _requires_existing_database(args):
+        db_path = database_path(create_parent=False)
+        if not db_path.is_file():
+            parser.exit(
+                1,
+                f"HIVE database not initialized: {db_path}. Run 'hive init' first.\n",
+            )
 
     if args.command == "init":
         print(f"HIVE database initialized: {initialize()}")
 
     elif args.command == "status":
-        path = initialize()
-        with connect() as c:
+        path = database_path(create_parent=False) if read_only else initialize()
+        with connect(readonly=read_only) as c:
             repos = c.execute(
                 "SELECT COUNT(*) FROM repositories"
             ).fetchone()[0]
@@ -205,7 +260,7 @@ def main(argv=None):
                 install_browser()
                 print("Chromium browser runtime installed.")
             except Exception as exc:
-                parser.exit(1, f"Browser installation failed: {exc}\\n")
+                parser.exit(1, f"Browser installation failed: {exc}\n")
 
         elif args.browser_command == "inspect":
             try:
@@ -215,22 +270,22 @@ def main(argv=None):
                 print(f"HTTP status: {result['http_status']}")
                 print(f"Screenshot: {result['screenshot']}")
                 print(f"Evidence: {result['evidence']}")
-                print("\\nPage text (first 50,000 characters):\\n")
+                print("\nPage text (first 50,000 characters):\n")
                 print(result["text"])
             except (ValueError, RuntimeError) as exc:
-                parser.exit(1, f"Browser inspection failed: {exc}\\n")
+                parser.exit(1, f"Browser inspection failed: {exc}\n")
 
     elif args.command == "ask":
         try:
             print(ask(" ".join(args.prompt)))
         except Exception as exc:
-            parser.exit(1, f"AI request failed: {exc}\\n")
+            parser.exit(1, f"AI request failed: {exc}\n")
 
     elif args.command == "ai" and args.ai_command == "status":
         try:
             result = get_status()
         except Exception as exc:
-            parser.exit(1, f"AI status check failed: {exc}\\n")
+            parser.exit(1, f"AI status check failed: {exc}\n")
 
         print("AI provider: llama.cpp")
         print(f"Server: {'Available' if result['available'] else 'Unavailable'}")
@@ -244,7 +299,7 @@ def main(argv=None):
                 print(f"  {model}")
 
         if not result["model_loaded"]:
-            parser.exit(1, "Configured model was not found on the AI server.\\n")
+            parser.exit(1, "Configured model was not found on the AI server.\n")
 
     elif args.command == "inspect":
         initialize()
@@ -271,8 +326,9 @@ def main(argv=None):
         )
 
     elif args.command == "repo" and args.repo_command == "list":
-        initialize()
-        rows = list_repositories()
+        if not read_only:
+            initialize()
+        rows = list_repositories(readonly=read_only)
 
         if not rows:
             print("No repositories registered.")
@@ -317,8 +373,9 @@ def main(argv=None):
             parser.error(str(exc))
 
     elif args.command == "capability" and args.cap_command == "list":
-        initialize()
-        rows = list_capabilities()
+        if not read_only:
+            initialize()
+        rows = list_capabilities(readonly=read_only)
 
         if not rows:
             print("No capabilities registered.")
@@ -346,9 +403,10 @@ def main(argv=None):
             parser.error(str(exc))
 
     elif args.command == "graph" and args.graph_command == "show":
-        initialize()
+        if not read_only:
+            initialize()
         try:
-            rows = show_graph(args.repository_id)
+            rows = show_graph(args.repository_id, readonly=True) if read_only else show_graph(args.repository_id)
 
             if not rows:
                 print("No source relationships found.")
@@ -372,18 +430,19 @@ def main(argv=None):
         "recursive-dependents",
         "cycles",
     ):
-        initialize()
+        if not read_only:
+            initialize()
         try:
             if args.graph_command == "dependencies":
                 rows = dependencies_for_file(
-                    args.repository_id, args.path
-                )
+                    args.repository_id, args.path, readonly=True
+                ) if read_only else dependencies_for_file(args.repository_id, args.path)
                 label = "Dependencies"
 
             elif args.graph_command == "dependents":
                 rows = dependents_for_file(
-                    args.repository_id, args.path
-                )
+                    args.repository_id, args.path, readonly=True
+                ) if read_only else dependents_for_file(args.repository_id, args.path)
                 label = "Dependents"
 
             elif args.graph_command == "recursive-dependencies":
@@ -391,6 +450,9 @@ def main(argv=None):
                     args.repository_id,
                     args.path,
                     max_depth=args.max_depth,
+                    readonly=True,
+                ) if read_only else recursive_dependencies_for_file(
+                    args.repository_id, args.path, max_depth=args.max_depth
                 )
                 label = "Recursive dependencies"
 
@@ -399,11 +461,14 @@ def main(argv=None):
                     args.repository_id,
                     args.path,
                     max_depth=args.max_depth,
+                    readonly=True,
+                ) if read_only else recursive_dependents_for_file(
+                    args.repository_id, args.path, max_depth=args.max_depth
                 )
                 label = "Recursive dependents"
 
             else:
-                groups = circular_dependency_groups(args.repository_id)
+                groups = circular_dependency_groups(args.repository_id, readonly=True) if read_only else circular_dependency_groups(args.repository_id)
 
                 print("Circular dependency groups:")
 

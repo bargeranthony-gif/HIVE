@@ -236,7 +236,7 @@ def build_graph(repository_id: int, root, path: Path | None = None):
 
 
 
-def _relationships_for_file(repository_id: int, relative_path: str, direction: str, path: Path | None = None):
+def _relationships_for_file(repository_id: int, relative_path: str, direction: str, path: Path | None = None, *, readonly: bool = False):
     """Return direct dependencies or dependents for an inspected file."""
     columns = {
         "dependencies": "source_path",
@@ -247,9 +247,10 @@ def _relationships_for_file(repository_id: int, relative_path: str, direction: s
         raise ValueError(f"Unsupported graph direction: {direction}")
 
     column = columns[direction]
-    initialize_graph(path)
+    if not readonly:
+        initialize_graph(path)
 
-    with connect(path) as conn:
+    with connect(path, readonly=readonly) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -281,25 +282,26 @@ def _relationships_for_file(repository_id: int, relative_path: str, direction: s
     return [dict(row) for row in rows]
 
 
-def dependencies_for_file(repository_id: int, relative_path: str, path: Path | None = None):
+def dependencies_for_file(repository_id: int, relative_path: str, path: Path | None = None, *, readonly: bool = False):
     """Return files directly imported by the specified file."""
     return _relationships_for_file(
-        repository_id, relative_path, "dependencies", path
+        repository_id, relative_path, "dependencies", path, readonly=readonly
     )
 
 
-def dependents_for_file(repository_id: int, relative_path: str, path: Path | None = None):
+def dependents_for_file(repository_id: int, relative_path: str, path: Path | None = None, *, readonly: bool = False):
     """Return files that directly import the specified file."""
     return _relationships_for_file(
-        repository_id, relative_path, "dependents", path
+        repository_id, relative_path, "dependents", path, readonly=readonly
     )
 
 
-def show_graph(repository_id: int, path: Path | None = None):
+def show_graph(repository_id: int, path: Path | None = None, *, readonly: bool = False):
     """Return stored relationships for one repository."""
-    initialize_graph(path)
+    if not readonly:
+        initialize_graph(path)
 
-    with connect(path) as conn:
+    with connect(path, readonly=readonly) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -319,11 +321,12 @@ def show_graph(repository_id: int, path: Path | None = None):
     return [dict(row) for row in rows]
 
 
-def _load_graph_for_traversal(repository_id: int, relative_path: str, path: Path | None = None):
+def _load_graph_for_traversal(repository_id: int, relative_path: str, path: Path | None = None, *, readonly: bool = False):
     """Load and validate a repository graph for traversal."""
-    initialize_graph(path)
+    if not readonly:
+        initialize_graph(path)
 
-    with connect(path) as conn:
+    with connect(path, readonly=readonly) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -361,6 +364,7 @@ def _recursive_traversal(
     direction: str,
     max_depth: int | None = None,
     path: Path | None = None,
+    readonly: bool = False,
 ):
     """Traverse dependencies or dependents using breadth-first search."""
     from collections import deque
@@ -372,7 +376,7 @@ def _recursive_traversal(
         if type(max_depth) is not int or max_depth <= 0:
             raise ValueError("max_depth must be a positive integer or None")
 
-    rows = _load_graph_for_traversal(repository_id, relative_path, path)
+    rows = _load_graph_for_traversal(repository_id, relative_path, path, readonly=readonly)
 
     adjacency = {}
 
@@ -418,6 +422,8 @@ def recursive_dependencies_for_file(
     relative_path: str,
     max_depth: int | None = None,
     path: Path | None = None,
+    *,
+    readonly: bool = False,
 ):
     """Return all transitively imported files."""
     return _recursive_traversal(
@@ -426,6 +432,7 @@ def recursive_dependencies_for_file(
         "dependencies",
         max_depth,
         path,
+        readonly,
     )
 
 
@@ -434,6 +441,8 @@ def recursive_dependents_for_file(
     relative_path: str,
     max_depth: int | None = None,
     path: Path | None = None,
+    *,
+    readonly: bool = False,
 ):
     """Return all files transitively depending on the specified file."""
     return _recursive_traversal(
@@ -442,14 +451,16 @@ def recursive_dependents_for_file(
         "dependents",
         max_depth,
         path,
+        readonly,
     )
 
 
-def circular_dependency_groups(repository_id: int, path: Path | None = None):
+def circular_dependency_groups(repository_id: int, path: Path | None = None, *, readonly: bool = False):
     """Return strongly connected groups containing circular imports."""
-    initialize_graph(path)
+    if not readonly:
+        initialize_graph(path)
 
-    with connect(path) as conn:
+    with connect(path, readonly=readonly) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),

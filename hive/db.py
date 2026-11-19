@@ -30,10 +30,30 @@ CREATE INDEX IF NOT EXISTS idx_capabilities_repo ON capabilities(repository_id);
 CREATE INDEX IF NOT EXISTS idx_repositories_language ON repositories(language);
 """
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    db_path = path or database_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
+def connect(
+    path: Path | None = None,
+    *,
+    readonly: bool = False,
+) -> sqlite3.Connection:
+    """Open the HIVE database, optionally enforcing SQLite read-only mode."""
+    db_path = Path(path) if path is not None else database_path(
+        create_parent=not readonly
+    )
+
+    if readonly:
+        if not db_path.is_file():
+            raise FileNotFoundError(
+                f"HIVE database does not exist: {db_path}. "
+                "Run 'hive init' to create it."
+            )
+        connection = sqlite3.connect(
+            f"{db_path.resolve().as_uri()}?mode=ro",
+            uri=True,
+        )
+    else:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(db_path)
+
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection

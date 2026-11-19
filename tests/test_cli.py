@@ -1,6 +1,13 @@
 import pytest
 
 from hive import cli
+from hive.db import initialize as initialize_database
+
+
+@pytest.fixture
+def initialized_cli_database(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIVE_HOME", str(tmp_path / "hive-home"))
+    initialize_database()
 
 
 def test_graph_build_command(monkeypatch, capsys):
@@ -25,7 +32,7 @@ def test_graph_build_command(monkeypatch, capsys):
     assert "Relationships found: 36" in output
 
 
-def test_graph_show_command(monkeypatch, capsys):
+def test_graph_show_command(monkeypatch, capsys, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
     monkeypatch.setattr(
         cli,
@@ -50,7 +57,7 @@ def test_graph_show_command(monkeypatch, capsys):
     assert "helper" in output
 
 
-def test_graph_show_empty_result(monkeypatch, capsys):
+def test_graph_show_empty_result(monkeypatch, capsys, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
     monkeypatch.setattr(cli, "show_graph", lambda repository_id: [])
 
@@ -73,7 +80,7 @@ def test_graph_build_handles_invalid_repository(monkeypatch):
     assert exc.value.code == 2
 
 
-def test_graph_dependencies_command(monkeypatch, capsys):
+def test_graph_dependencies_command(monkeypatch, capsys, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
     monkeypatch.setattr(
         cli,
@@ -98,7 +105,7 @@ def test_graph_dependencies_command(monkeypatch, capsys):
     assert "line 3" in output
 
 
-def test_graph_dependents_command(monkeypatch, capsys):
+def test_graph_dependents_command(monkeypatch, capsys, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
     monkeypatch.setattr(
         cli,
@@ -123,7 +130,7 @@ def test_graph_dependents_command(monkeypatch, capsys):
     assert "line 5" in output
 
 
-def test_graph_dependencies_empty_result(monkeypatch, capsys):
+def test_graph_dependencies_empty_result(monkeypatch, capsys, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
     monkeypatch.setattr(cli, "dependencies_for_file", lambda repository_id, path: [])
 
@@ -132,7 +139,7 @@ def test_graph_dependencies_empty_result(monkeypatch, capsys):
     assert "No relationships found." in capsys.readouterr().out
 
 
-def test_graph_dependencies_handles_invalid_file(monkeypatch):
+def test_graph_dependencies_handles_invalid_file(monkeypatch, initialized_cli_database):
     monkeypatch.setattr(cli, "initialize", lambda: None)
 
     def fail_lookup(repository_id, path):
@@ -175,7 +182,7 @@ def test_ai_status_command(monkeypatch, capsys):
     assert "Model loaded: Yes" in output
 
 
-def test_ai_status_fails_when_model_missing(monkeypatch):
+def test_ai_status_fails_when_model_missing(monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "get_status",
@@ -192,3 +199,6 @@ def test_ai_status_fails_when_model_missing(monkeypatch):
         cli.main(["ai", "status"])
 
     assert exc.value.code == 1
+    error_output = capsys.readouterr().err
+    assert error_output.endswith("\n")
+    assert "\\n" not in error_output
