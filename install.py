@@ -312,6 +312,7 @@ def write_launchers(home, venv, server, model):
         f"export HIVE_LLM_BASE_URL={sh_quote(base_url)}\n"
         f"export HIVE_LLM_MODEL={sh_quote(MODEL_NAME)}\n"
         f"exec {sh_quote(server)} -m {sh_quote(model)} "
+        f"--alias {sh_quote(MODEL_NAME)} "
         "--host 127.0.0.1 --port 8080 --ctx-size 2048 \"$@\"\n",
         encoding="utf-8",
     )
@@ -323,6 +324,7 @@ def write_launchers(home, venv, server, model):
         f"$env:HIVE_LLM_BASE_URL = {ps_quote(base_url)}\n"
         f"$env:HIVE_LLM_MODEL = {ps_quote(MODEL_NAME)}\n"
         f"& {ps_quote(server)} -m {ps_quote(model)} "
+        f"--alias {ps_quote(MODEL_NAME)} "
         "--host 127.0.0.1 --port 8080 --ctx-size 2048 @args\n"
         "exit $LASTEXITCODE\n",
         encoding="utf-8",
