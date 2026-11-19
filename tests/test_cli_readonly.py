@@ -61,8 +61,8 @@ def test_informational_database_commands_do_not_write(
 ):
     home, database, repository_id = hive_environment
     args = ["--read-only", *command]
-    if args[0] == "graph":
-        if args[1] == "show" or args[1] == "cycles":
+    if command[0] == "graph":
+        if command[1] == "show" or command[1] == "cycles":
             args.append(str(repository_id))
         else:
             args.extend([str(repository_id), "src.py"])
