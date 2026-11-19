@@ -474,3 +474,158 @@ This document is the architectural baseline for HIVE development. Changes should
 Implementation may proceed incrementally, but a feature must not silently contradict the core principles. Where new evidence requires a change, document the trade-off and update the specification deliberately.
 
 **Completion of this specification does not authorize deployment, financial trading, resource sharing, or access to third-party infrastructure. Those actions require their own explicit owner permissions and operational controls.**
+
+---
+
+## 14. Lightweight edge runtime and HIVE intelligence plane
+
+The deployment architecture must explicitly distinguish the **HIVE Edge Runtime** from the **HIVE Intelligence Plane**. These are deployment roles and responsibility boundaries, not mandatory separate products or a requirement to use microservices.
+
+### 14.1 HIVE Edge Runtime
+
+The Edge Runtime is the smallest practical, portable HIVE installation that allows an owner-controlled device to participate in HIVE.
+
+Its mandatory responsibilities are limited to:
+- Installation and node identity, enrollment lifecycle, and secure authentication.
+- Secure, versioned communication with authorized HIVE services and peers.
+- Local enforcement of owner permissions, resource limits, and revocation.
+- Local inventory and capability-adapter registration.
+- Dispatch and execution of explicitly authorized local actions.
+- Reporting task results, health, and relevant resource status.
+- Safe offline behavior, bounded queues, duplicate handling, and recovery.
+
+The Edge Runtime must not require a local large language model, a full research stack, a specialist-agent catalog, or every domain extension. Optional capabilities may be installed when the device has the resources and the owner authorizes them.
+
+The runtime should be designed for constrained devices as well as workstations. A phone or embedded device may act primarily as a secure endpoint, sensor, interface, or actuator while expensive reasoning and computation occur elsewhere.
+
+The Edge Runtime must remain capable of enforcing local security boundaries when disconnected. Loss of the Intelligence Plane must not convert a previously denied action into an allowed action. Offline execution is limited to pre-authorized operations with explicit expiry, resource bounds, and safe failure behavior.
+
+### 14.2 HIVE Intelligence Plane ("home brain")
+
+The Intelligence Plane is the logical coordination and intelligence service for one HIVE installation or a federated group of installations. "Home brain" is a deployment concept, not a requirement that all intelligence reside on one physical server.
+
+Responsibilities may include:
+- Complex reasoning, planning, and task decomposition.
+- AI model hosting, inference routing, and specialist-agent coordination.
+- Persistent knowledge, research, provenance, and experience evaluation.
+- Capability-aware task scheduling and resource allocation.
+- Cross-node coordination, monitoring, and recovery.
+- Autonomous environment learning and engineering workflows when installed and authorized.
+
+The Intelligence Plane may run on one powerful host or be distributed across multiple authorized servers and accelerator nodes. Its scheduler must account for capability evidence, compatibility, latency, data locality, resource quotas, cost, availability, and owner policy. It must not treat advertised or idle resources as permission to use them.
+
+A deployment may have a local-only Intelligence Plane, a remote/cloud-hosted plane, or a hybrid arrangement. The Edge Runtime must communicate through stable versioned contracts rather than depending on a particular hosting topology.
+
+### 14.3 Control and data flow
+
+A typical task follows this sequence:
+
+1. An owner or authorized interface submits an objective.
+2. The Intelligence Plane creates a plan and identifies required capabilities.
+3. The scheduler selects eligible nodes using current evidence and availability.
+4. Governance evaluates the actor, action, target, scope, resource budget, and applicable owner policies.
+5. The target Edge Runtime independently validates the authorization and local conditions.
+6. The node executes only the authorized operation and returns structured results.
+7. The Intelligence Plane verifies the outcome, updates task state, and records provenance and audit evidence.
+
+The Intelligence Plane cannot override a node owner's local denial or revocation. Remote authorization is necessary but not sufficient where local owner policy imposes additional restrictions.
+
+### 14.4 Portable integration contract
+
+The core should expose a small, versioned contract for:
+- Installation and node identity.
+- Authentication and secure messaging.
+- Capability and resource manifests.
+- Permission and authorization context.
+- Task envelope, cancellation, and result envelope.
+- Health, status, and lifecycle events.
+- Adapter and extension registration.
+
+Platform-specific behavior belongs behind adapters. Domain-specific functionality belongs in optional capabilities or extensions. New integrations should not require adding their domain logic to the Edge Runtime.
+
+The contract must support version negotiation, capability negotiation, explicit unsupported-feature responses, and safe downgrade behavior. A remote service must not silently assume that an older edge runtime supports a newer operation.
+
+### 14.5 Local-first and network-loss behavior
+
+Every installation must retain local identity, policy enforcement, audit continuity, and essential local functionality when disconnected. Network loss must be an explicit task state, not treated as success or as implicit permission to continue.
+
+Queued tasks must have expiry, idempotency or duplicate-detection semantics, and a declared offline execution policy. On reconnection, stale work must be revalidated against current policy and state before execution.
+
+## 15. Autonomous environment learning
+
+Autonomous Environment Learning (AEL) is a general-purpose optional capability, not a game-specific subsystem and not a dependency of the minimal core.
+
+AEL allows HIVE to learn interactive environments through a combination of:
+- Visual observation and, where available, semantic UI/accessibility metadata.
+- Authorized capture of human demonstrations and input events.
+- Correlation of observed state, action, timing, and outcome.
+- Documentation, manuals, APIs, and other authorized reference material.
+- Controlled experiments and outcome measurement.
+- Reusable procedures, state models, and uncertainty tracking.
+
+Target environments may include desktop applications, browsers, CAD and engineering software, games, operating-system tools, and supported physical interfaces.
+
+AEL must distinguish:
+- **Observed:** directly captured from an interaction or source.
+- **Inferred:** a hypothesis derived from observations or documentation.
+- **Experimentally verified:** reproduced under recorded conditions with a measured outcome.
+- **Stale or contextual:** evidence whose validity depends on a particular application version, configuration, account, device, or environment.
+
+AEL must retain source provenance, environment/version context, confidence, and failure history. A demonstration is not automatically a universally valid procedure. When confidence is inadequate, the environment changes unexpectedly, or an action exceeds authorization, HIVE must stop or request human guidance.
+
+Input capture and automation are subject to operating-system permissions, application rules, account ownership, and applicable service terms. AEL must not include anti-cheat, anti-bot, or access-control evasion.
+
+## 16. Autonomous engineering and ecosystem improvement
+
+Autonomous Engineering is a later optional capability built on the stable core, infrastructure registry, capability catalog, provenance system, governance, and appropriate simulation or fabrication tools.
+
+It may research, specify, design, simulate, test, and propose improvements to HIVE's software, infrastructure, devices, and supporting hardware. Example work includes software tools, application extensions, mechanical assemblies, electronics, circuit boards, computing platforms, robotics, networking equipment, and energy systems.
+
+A proposed improvement must follow an evidence-driven engineering lifecycle:
+1. Identify and measure a limitation or requirement.
+2. Define measurable acceptance criteria and constraints.
+3. Research existing solutions, compatibility, licensing, patents, safety, and cost.
+4. Produce a versioned design and bill of materials or implementation plan.
+5. Simulate and test in an isolated environment where practical.
+6. Record assumptions, uncertainty, test conditions, and results.
+7. Produce a reviewable proposal and deployment/rollback plan.
+8. Obtain the required owner authorization before fabrication, procurement, production deployment, or changes to governance/security controls.
+9. Validate the real result against the original acceptance criteria.
+
+HIVE may autonomously improve proposals and experimental artifacts within an authorized sandbox. It may not grant itself additional permissions, silently alter its own governance, bypass review gates, or deploy unverified changes into production. Self-improvement is a governed engineering workflow, not unrestricted self-modification.
+
+## 17. Minimal-core design rule
+
+The foundational HIVE core must remain as small as reasonably practical. Its purpose is to establish identity, secure participation, owner control, communication, capability discovery, authorized task exchange, and reliable reporting.
+
+Reasoning models, specialist agents, domain knowledge, computer-operation systems, autonomous learning, engineering design, and other advanced functionality are attachable capabilities. They must not become mandatory dependencies of every HIVE installation.
+
+Core interfaces should be stable and versioned. Optional capabilities should declare their dependencies, supported runtime versions, permissions, resource requirements, data scopes, and evidence. The architecture should favor a small portable runtime plus independently deployable capabilities over a monolithic installation.
+
+The goal is not to minimize line count at the expense of security or reliability. The goal is to keep mandatory responsibilities narrow, composable, testable, and portable.
+
+## 18. Architecture staging and release discipline
+
+HIVE development uses two related but distinct identifiers:
+
+- **Development stage** describes the verified maturity of the platform and its capabilities.
+- **Software version** identifies a particular code release or package.
+
+A stage number is not proof that a corresponding feature exists. The repository's version, release tags, tests, and implementation-status records are the evidence.
+
+The proposed maturity progression is:
+
+- **0.1 — Local foundation:** existing Python package, CLI, local persistence, repository/source discovery, capability evidence, graph analysis, and early planning/governance foundations. Individual features must be marked by their actual status; prototypes and mock execution are not production autonomy.
+- **0.2 — Reconciled core contracts:** repository audit completed; stable identity, configuration, event, capability, task, result, and extension contracts agreed; current modules and migrations mapped; no duplicate abstractions introduced.
+- **0.3 — Edge runtime prototype:** minimal local runtime, node identity, enrollment lifecycle, adapter contract, local policy enforcement, and health reporting.
+- **0.4 — Infrastructure awareness:** host inventory, node registry, resource/capability manifests, evidence freshness, and lifecycle events.
+- **0.5 — Secure communications:** authenticated, versioned node messaging; task/result envelopes; revocation; offline and reconnection behavior.
+- **0.6 — Coordinated multi-node execution:** capability-aware scheduling, bounded resource leases, durable task state, idempotency, verification, and failure recovery.
+- **0.7 — Extensible capability ecosystem:** versioned adapters, optional services, specialist agents, model providers, and capability lifecycle management.
+- **0.8 — Operational hardening:** security review, compatibility matrix, observability, backup/restore, adversarial tests, and documented installation/upgrade paths.
+- **1.0 — Stable foundational platform:** stable edge and coordination contracts, tested local and multi-node operation, documented owner controls, safe upgrades, and reliable recovery.
+- **1.1 and later — Compatible capability growth:** backward-compatible improvements and optional capabilities such as AEL and Autonomous Engineering, subject to their own maturity and safety gates.
+
+This progression is a planning proposal, not a declaration that current HIVE has completed 0.1 acceptance or that any later stage is implemented. The project must maintain a status matrix that marks each requirement **implemented**, **partial**, **prototype**, **planned**, or **unknown**, with links to code and tests where available.
+
+A milestone may be published only after the diff is reviewed, tests are run and recorded, secrets and local artifacts are excluded, and the intended branch/commit is agreed. A roadmap document or architecture specification does not by itself authorize a release or deployment.
