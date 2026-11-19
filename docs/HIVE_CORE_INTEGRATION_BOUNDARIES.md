@@ -147,7 +147,7 @@ A subsystem can be published in the repository as an isolated prototype without 
 | Read-only CLI diagnostics and llama.cpp model-alias compatibility | Merged to `main` in PR #9; exact-head GitHub Actions Python 3.10/3.11/3.12 matrix passed. |
 | Repository security policy, Dependabot configuration, CodeQL workflow | Merged to `main` in PR #8; exact-head CodeQL run passed. Repository-level security settings still require separate owner configuration. |
 | HIVE Core architecture and staged Edge Runtime / Intelligence Plane roadmap | Architecture documentation proposal; not runtime implementation. |
-| HAIE Phase 4 personality-revision prototype | Published to `phase4/adaptive-identity-review` commit `2383455`; isolated, not integrated into Core; local combined tests reported 339 passed, no hosted test result yet. |
+| HAIE Phase 4 personality-revision prototype | Merged to `main` in PR #13 under `.emulation/prototypes/adaptive_identity/v04`; isolated, not integrated into Core. Owner-reported local tests: 119 HAIE v0.4 / 339 combined; hosted combined regression and CodeQL passed on Python 3.10–3.12. |
 | Cross-interface shared resource/conversation context and task extraction | Planned in Issue #10; not implemented as a complete feature. |
 | Node registry, cross-platform Edge Runtime, authenticated multi-node coordination | Planned architecture; not a complete implemented runtime. |
 | Treasury, brokerage trading, autonomous revenue engine | Planned domain extensions; not implemented. |
