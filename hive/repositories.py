@@ -35,5 +35,6 @@ def add_repository(url: str, description: str | None = None, language: str | Non
         return int(row["id"])
 
 def list_repositories():
-    with connect() as conn:
+    """List registered repositories without opening SQLite for writes."""
+    with connect(readonly=True) as conn:
         return conn.execute("SELECT id,owner,name,language,stars,url FROM repositories ORDER BY id").fetchall()
