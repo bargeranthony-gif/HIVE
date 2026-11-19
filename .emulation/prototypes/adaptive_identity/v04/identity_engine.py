@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 DEFAULT_TRAITS = {
     "sociability": 0.50,
@@ -144,7 +144,7 @@ class IdentityStore:
                     "INSERT INTO haie_schema (version) VALUES (?)",
                     (SCHEMA_VERSION,),
                 )
-            elif row["version"] not in (1, 2, 3):
+            elif row["version"] not in (1, 2, 3, 4, 5):
                 raise RuntimeError(
                     f"Unsupported HAIE schema version: {row['version']}"
                 )
@@ -387,6 +387,133 @@ class IdentityStore:
                 ON claims(experience_id)
             """)
 
+            # Schema v4: owner-reviewed personality revision proposals.
+            # Evidence links retain the original claim ID and source-group
+            # snapshot even when the live claim is later deleted.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS personality_revisions (
+                    revision_id TEXT PRIMARY KEY,
+                    identity_id TEXT NOT NULL
+                        REFERENCES identities(identity_id)
+                        ON DELETE CASCADE,
+                    trait_key TEXT NOT NULL,
+                    interaction_type TEXT NOT NULL DEFAULT '',
+                    previous_value REAL NOT NULL,
+                    proposed_value REAL NOT NULL,
+                    baseline_profile_revision INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    rationale TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    decision_reason TEXT,
+                    CHECK (
+                        trait_key IN (
+                            'sociability',
+                            'humor',
+                            'competitiveness',
+                            'formality',
+                            'patience',
+                            'playfulness'
+                        )
+                    ),
+                    CHECK (
+                        previous_value >= 0.0 AND previous_value <= 1.0
+                    ),
+                    CHECK (
+                        proposed_value >= 0.0 AND proposed_value <= 1.0
+                    ),
+                    CHECK (previous_value != proposed_value),
+                    CHECK (baseline_profile_revision > 0),
+                    CHECK (
+                        status IN (
+                            'pending', 'accepted', 'rejected', 'invalidated'
+                        )
+                    ),
+                    CHECK (
+                        (status = 'pending' AND decided_at IS NULL)
+                        OR
+                        (status != 'pending' AND decided_at IS NOT NULL)
+                    )
+                )
+            """)
+
+            # Schema v5: retain the exact evidence proposition type
+            # selected when a personality revision was proposed.
+            revision_columns = {
+                item["name"]
+                for item in conn.execute(
+                    "PRAGMA table_info(personality_revisions)"
+                ).fetchall()
+            }
+            if "interaction_type" not in revision_columns:
+                conn.execute(
+                    """
+                    ALTER TABLE personality_revisions
+                    ADD COLUMN interaction_type TEXT NOT NULL DEFAULT ''
+                    """
+                )
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_personality_revisions_identity_status
+                ON personality_revisions(
+                    identity_id, status, created_at
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS revision_evidence (
+                    evidence_link_id TEXT PRIMARY KEY,
+                    revision_id TEXT NOT NULL
+                        REFERENCES personality_revisions(revision_id)
+                        ON DELETE CASCADE,
+                    claim_id TEXT
+                        REFERENCES claims(claim_id)
+                        ON DELETE SET NULL,
+                    original_claim_id TEXT NOT NULL,
+                    source_group_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (revision_id, original_claim_id),
+                    CHECK (
+                        claim_id IS NULL
+                        OR claim_id = original_claim_id
+                    )
+                )
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_revision_evidence_revision
+                ON revision_evidence(revision_id)
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS
+                    idx_revision_evidence_claim
+                ON revision_evidence(claim_id)
+            """)
+
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS
+                    trg_haie_claim_delete_invalidates_revision
+                BEFORE DELETE ON claims
+                BEGIN
+                    UPDATE personality_revisions
+                    SET status = 'invalidated',
+                        decided_at = strftime(
+                            '%Y-%m-%dT%H:%M:%f+00:00', 'now'
+                        ),
+                        decision_reason =
+                            'A supporting evidence claim was deleted.'
+                    WHERE status = 'pending'
+                      AND revision_id IN (
+                          SELECT revision_id
+                          FROM revision_evidence
+                          WHERE claim_id = OLD.claim_id
+                      );
+                END
+            """)
+
             conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS
                     trg_haie_group_identity_immutable
@@ -429,7 +556,7 @@ class IdentityStore:
             """)
 
             conn.execute("""
-                UPDATE haie_schema SET version = 3
+                UPDATE haie_schema SET version = 5
             """)
 
     def create_identity(
@@ -928,6 +1055,8 @@ class IdentityStore:
         subject_id = _validate_identifier(subject_id, "subject_id")
 
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
             exists = conn.execute(
                 "SELECT 1 FROM identities WHERE identity_id = ?",
                 (identity_id,),
@@ -935,6 +1064,34 @@ class IdentityStore:
 
             if exists is None:
                 raise KeyError(f"Unknown identity: {identity_id}")
+
+            conn.execute(
+                """
+                UPDATE personality_revisions
+                SET status = 'invalidated',
+                    decided_at = ?,
+                    decision_reason = ?
+                WHERE identity_id = ?
+                  AND status = 'pending'
+                  AND revision_id IN (
+                      SELECT DISTINCT re.revision_id
+                      FROM revision_evidence AS re
+                      JOIN claims AS c
+                        ON c.claim_id = re.claim_id
+                      JOIN experiences AS e
+                        ON e.experience_id = c.experience_id
+                      WHERE e.identity_id = ?
+                        AND e.subject_id = ?
+                  )
+                """,
+                (
+                    _now(),
+                    "Supporting subject-specific evidence was deleted when the subject was forgotten.",
+                    identity_id,
+                    identity_id,
+                    subject_id,
+                ),
+            )
 
             memory_count = conn.execute(
                 """
@@ -1107,6 +1264,29 @@ class IdentityStore:
                         now,
                     ),
                 )
+
+                if new_status != "independent":
+                    conn.execute(
+                        """
+                        UPDATE personality_revisions
+                        SET status = 'invalidated',
+                            decided_at = ?,
+                            decision_reason = ?
+                        WHERE identity_id = ?
+                          AND status = 'pending'
+                          AND revision_id IN (
+                              SELECT revision_id
+                              FROM revision_evidence
+                              WHERE source_group_id = ?
+                          )
+                        """,
+                        (
+                            now,
+                            "A supporting evidence source group lost independent status.",
+                            identity_id,
+                            group_id,
+                        ),
+                    )
 
                 conn.execute(
                     """
@@ -1540,6 +1720,683 @@ class IdentityStore:
 
         return [dict(row) for row in rows]
 
+    def propose_personality_revision(
+        self,
+        revision_id: str,
+        identity_id: str,
+        trait_key: str,
+        proposed_value: float,
+        rationale: str,
+    ) -> dict:
+        # Create a pending, evidence-backed proposal without changing identity.
+        revision_id = _validate_identifier(revision_id, "revision_id")
+        identity_id = _validate_identifier(identity_id, "identity_id")
+
+        if not isinstance(trait_key, str) or trait_key not in TRAITS:
+            raise ValueError("Unknown personality trait.")
+
+        if isinstance(proposed_value, bool) or not isinstance(
+            proposed_value, (int, float)
+        ):
+            raise ValueError("proposed_value must be numeric between 0 and 1.")
+
+        proposed_value = float(proposed_value)
+        if not 0.0 <= proposed_value <= 1.0:
+            raise ValueError("proposed_value must be between 0 and 1.")
+
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ValueError("rationale must be non-empty text.")
+        rationale = rationale.strip()
+        if len(rationale) > 2000:
+            raise ValueError("rationale cannot exceed 2000 characters.")
+
+        claim_key = f"personality_trait:{trait_key}:direction"
+        now = _now()
+
+        with self._connect() as conn:
+            # Hold the write lock while checking evidence and saving the
+            # proposal. This prevents evidence/profile changes between them.
+            conn.execute("BEGIN IMMEDIATE")
+
+            profile = conn.execute(
+                """
+                SELECT traits_json, revision
+                FROM personality_profiles
+                WHERE identity_id = ?
+                """,
+                (identity_id,),
+            ).fetchone()
+
+            if profile is None:
+                raise KeyError(f"Unknown identity: {identity_id}")
+
+            current_traits = json.loads(profile["traits_json"])
+            previous_value = float(current_traits[trait_key])
+            baseline_revision = int(profile["revision"])
+
+            change = proposed_value - previous_value
+            if change == 0:
+                raise ValueError("Proposed value must change the trait.")
+            if abs(change) > 0.10:
+                raise ValueError(
+                    "A personality revision cannot change a trait by more than 0.10."
+                )
+
+            target_direction = "increase" if change > 0 else "decrease"
+            opposite_direction = (
+                "decrease" if target_direction == "increase" else "increase"
+            )
+
+            rows = conn.execute(
+                """
+                SELECT
+                    c.claim_id,
+                    c.claim_value,
+                    c.stance,
+                    e.experience_id,
+                    e.interaction_type,
+                    s.group_id,
+                    g.independence_status
+                FROM claims AS c
+                JOIN experiences AS e
+                    ON e.experience_id = c.experience_id
+                LEFT JOIN evidence_sources AS s
+                    ON s.identity_id = e.identity_id
+                   AND s.source_id = e.source_id
+                LEFT JOIN evidence_source_groups AS g
+                    ON g.identity_id = s.identity_id
+                   AND g.group_id = s.group_id
+                WHERE e.identity_id = ?
+                  AND e.subject_id IS NULL
+                  AND c.claim_key = ?
+                  AND c.context_key = 'global_personality'
+                ORDER BY e.interaction_type, c.claim_id
+                """,
+                (identity_id, claim_key),
+            ).fetchall()
+
+            if not rows:
+                raise ValueError(
+                    "No global-personality evidence exists for this trait."
+                )
+
+            by_interaction = {}
+            for row in rows:
+                value = row["claim_value"].strip().casefold()
+                stance = row["stance"]
+
+                if value not in {"increase", "decrease"}:
+                    raise ValueError(
+                        "Trait-direction evidence contains an unsupported value."
+                    )
+
+                if stance == "uncertain":
+                    continue
+
+                if stance == "supports":
+                    effective_direction = value
+                elif stance == "refutes":
+                    effective_direction = (
+                        "decrease" if value == "increase" else "increase"
+                    )
+                else:
+                    raise ValueError(
+                        "Trait-direction evidence contains an invalid stance."
+                    )
+
+                interaction = row["interaction_type"].strip().casefold()
+                by_interaction.setdefault(interaction, []).append(
+                    (row, effective_direction)
+                )
+
+            eligible_sets = []
+
+            for interaction, records in sorted(by_interaction.items()):
+                # Opposing evidence blocks a proposal, including evidence
+                # that lacks provenance or comes from a non-independent group.
+                if any(
+                    direction == opposite_direction
+                    for _, direction in records
+                ):
+                    raise ValueError(
+                        "Opposing global-personality evidence blocks this proposal."
+                    )
+
+                supporting_groups = {
+                    row["group_id"]
+                    for row, direction in records
+                    if direction == target_direction
+                    and row["group_id"] is not None
+                    and row["independence_status"] == "independent"
+                }
+
+                if len(supporting_groups) >= 2:
+                    eligible_sets.append(
+                        (len(supporting_groups), interaction, records)
+                    )
+
+            if not eligible_sets:
+                raise ValueError(
+                    "At least two independent source groups must support "
+                    "the proposed direction within one interaction type."
+                )
+
+            # Select one qualifying proposition deterministically. The
+            # evaluator treats different interaction types as separate
+            # propositions, so evidence is not pooled across them.
+            _, selected_interaction, selected_records = sorted(
+                eligible_sets,
+                key=lambda item: (-item[0], item[1]),
+            )[0]
+
+            supporting_claims = []
+            supporting_groups = set()
+
+            for row, direction in selected_records:
+                if direction != target_direction:
+                    continue
+                if (
+                    row["group_id"] is None
+                    or row["independence_status"] != "independent"
+                ):
+                    continue
+
+                supporting_claims.append(row)
+                supporting_groups.add(row["group_id"])
+
+            if len(supporting_groups) < 2:
+                raise ValueError(
+                    "Insufficient independent evidence for this proposal."
+                )
+
+            conn.execute(
+                """
+                INSERT INTO personality_revisions (
+                    revision_id, identity_id, trait_key,
+                    interaction_type, previous_value, proposed_value,
+                    baseline_profile_revision, status,
+                    rationale, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    revision_id,
+                    identity_id,
+                    trait_key,
+                    selected_interaction,
+                    previous_value,
+                    proposed_value,
+                    baseline_revision,
+                    rationale,
+                    now,
+                ),
+            )
+
+            for row in supporting_claims:
+                conn.execute(
+                    """
+                    INSERT INTO revision_evidence (
+                        evidence_link_id, revision_id, claim_id,
+                        original_claim_id, source_group_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        revision_id,
+                        row["claim_id"],
+                        row["claim_id"],
+                        row["group_id"],
+                        now,
+                    ),
+                )
+
+            revision = conn.execute(
+                """
+                SELECT * FROM personality_revisions
+                WHERE revision_id = ?
+                """,
+                (revision_id,),
+            ).fetchone()
+
+            evidence = conn.execute(
+                """
+                SELECT *
+                FROM revision_evidence
+                WHERE revision_id = ?
+                ORDER BY original_claim_id
+                """,
+                (revision_id,),
+            ).fetchall()
+
+        result = dict(revision)
+        result["evidence"] = [dict(row) for row in evidence]
+        result["evidence_interaction_type"] = selected_interaction
+        result["independent_source_group_count"] = len(supporting_groups)
+        return result
+
+
+    def get_personality_revision(self, revision_id: str) -> dict:
+        revision_id = _validate_identifier(revision_id, "revision_id")
+
+        with self._connect() as conn:
+            # Keep revision, evidence links, and live evidence in one
+            # consistent SQLite read snapshot.
+            conn.execute("BEGIN")
+
+            row = conn.execute(
+                "SELECT * FROM personality_revisions WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()
+
+            if row is None:
+                raise KeyError(f"Unknown personality revision: {revision_id}")
+
+            evidence = conn.execute(
+                """
+                SELECT * FROM revision_evidence
+                WHERE revision_id = ?
+                ORDER BY original_claim_id
+                """,
+                (revision_id,),
+            ).fetchall()
+
+            live_evidence = conn.execute(
+                """
+                SELECT
+                    re.claim_id,
+                    re.original_claim_id,
+                    re.source_group_id AS recorded_group_id,
+                    c.claim_id AS live_claim_id,
+                    c.claim_key,
+                    c.claim_value,
+                    c.stance,
+                    c.context_key,
+                    e.identity_id,
+                    e.subject_id,
+                    e.interaction_type,
+                    s.group_id AS live_group_id,
+                    g.independence_status
+                FROM revision_evidence AS re
+                LEFT JOIN claims AS c
+                    ON c.claim_id = re.claim_id
+                LEFT JOIN experiences AS e
+                    ON e.experience_id = c.experience_id
+                LEFT JOIN evidence_sources AS s
+                    ON s.identity_id = e.identity_id
+                   AND s.source_id = e.source_id
+                LEFT JOIN evidence_source_groups AS g
+                    ON g.identity_id = s.identity_id
+                   AND g.group_id = s.group_id
+                WHERE re.revision_id = ?
+                """,
+                (revision_id,),
+            ).fetchall()
+
+            revision = dict(row)
+            evidence_items = [dict(item) for item in evidence]
+
+            direction = (
+                "increase"
+                if revision["proposed_value"] > revision["previous_value"]
+                else "decrease"
+            )
+            opposite_direction = (
+                "decrease" if direction == "increase" else "increase"
+            )
+            expected_claim_key = (
+                f"personality_trait:{revision['trait_key']}:direction"
+            )
+            expected_interaction = revision["interaction_type"].strip().casefold()
+
+            valid_groups = set()
+
+            for item in live_evidence:
+                if (
+                    item["claim_id"] is None
+                    or item["live_claim_id"] != item["original_claim_id"]
+                    or item["identity_id"] != revision["identity_id"]
+                    or item["subject_id"] is not None
+                    or item["claim_key"] != expected_claim_key
+                    or item["context_key"] != "global_personality"
+                    or item["interaction_type"].strip().casefold()
+                        != expected_interaction
+                    or item["live_group_id"] != item["recorded_group_id"]
+                    or item["independence_status"] != "independent"
+                ):
+                    continue
+
+                value = item["claim_value"].strip().casefold()
+                stance = item["stance"]
+
+                if stance == "supports":
+                    effective_direction = value
+                elif stance == "refutes":
+                    effective_direction = (
+                        opposite_direction
+                        if value == direction
+                        else direction
+                    ) if value in {"increase", "decrease"} else None
+                else:
+                    effective_direction = None
+
+                if effective_direction == direction:
+                    valid_groups.add(item["live_group_id"])
+
+        revision["evidence"] = evidence_items
+        revision["independent_source_group_count"] = len(valid_groups)
+        return revision
+
+
+    def list_personality_revisions(
+        self, identity_id: str, status: str | None = None
+    ) -> list[dict]:
+        identity_id = _validate_identifier(identity_id, "identity_id")
+        allowed = {"pending", "accepted", "rejected", "invalidated"}
+        if status is not None and (
+            not isinstance(status, str) or status not in allowed
+        ):
+            raise ValueError("Invalid personality revision status.")
+
+        with self._connect() as conn:
+            identity = conn.execute(
+                "SELECT 1 FROM identities WHERE identity_id = ?",
+                (identity_id,),
+            ).fetchone()
+            if identity is None:
+                raise KeyError(f"Unknown identity: {identity_id}")
+
+            if status is None:
+                rows = conn.execute(
+                    """
+                    SELECT revision_id FROM personality_revisions
+                    WHERE identity_id = ?
+                    ORDER BY created_at, revision_id
+                    """,
+                    (identity_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT revision_id FROM personality_revisions
+                    WHERE identity_id = ? AND status = ?
+                    ORDER BY created_at, revision_id
+                    """,
+                    (identity_id, status),
+                ).fetchall()
+
+        return [
+            self.get_personality_revision(row["revision_id"])
+            for row in rows
+        ]
+
+    def accept_personality_revision(
+        self, revision_id: str, decision_reason: str
+    ) -> dict:
+        """Record approval only after atomic revalidation of proposal evidence.
+
+        This records an approval event, not the identity of an authenticated
+        owner. Authorization must be enforced by the HIVE control layer.
+        """
+        revision_id = _validate_identifier(revision_id, "revision_id")
+        if not isinstance(decision_reason, str) or not decision_reason.strip():
+            raise ValueError("A non-empty decision_reason is required.")
+        decision_reason = decision_reason.strip()
+        if len(decision_reason) > 2000:
+            raise ValueError("decision_reason cannot exceed 2000 characters.")
+
+        now = _now()
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
+            revision = conn.execute(
+                "SELECT * FROM personality_revisions WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()
+
+            if revision is None:
+                raise KeyError(f"Unknown personality revision: {revision_id}")
+            if revision["status"] != "pending":
+                raise ValueError(
+                    f"Personality revision is not pending: {revision['status']}"
+                )
+
+            def invalidate(reason):
+                conn.execute(
+                    """
+                    UPDATE personality_revisions
+                    SET status = 'invalidated',
+                        decided_at = ?, decision_reason = ?
+                    WHERE revision_id = ? AND status = 'pending'
+                    """,
+                    (now, reason, revision_id),
+                )
+
+            profile = conn.execute(
+                """
+                SELECT traits_json, revision
+                FROM personality_profiles
+                WHERE identity_id = ?
+                """,
+                (revision["identity_id"],),
+            ).fetchone()
+
+            reason = None
+
+            if profile is None:
+                reason = "The identity profile no longer exists."
+            elif profile["revision"] != revision["baseline_profile_revision"]:
+                reason = "The personality profile changed after this proposal was created."
+            elif not revision["interaction_type"]:
+                reason = "Legacy proposal has no recorded interaction type; evidence cannot be revalidated."
+
+            if reason is None:
+                traits = json.loads(profile["traits_json"])
+                trait = revision["trait_key"]
+                previous = float(revision["previous_value"])
+                proposed = float(revision["proposed_value"])
+                delta = proposed - previous
+                direction = "increase" if delta > 0 else "decrease"
+                current = float(traits.get(trait, -1))
+
+                if current != previous:
+                    reason = "The target trait no longer matches the proposal baseline."
+                elif delta == 0 or abs(delta) > 0.10:
+                    reason = "The proposed trait change exceeds the permitted revision limit."
+                elif not 0.0 <= proposed <= 1.0:
+                    reason = "The proposed trait value is outside the valid range."
+
+            if reason is None:
+                claim_key = f"personality_trait:{trait}:direction"
+
+                links = conn.execute(
+                    """
+                    SELECT
+                        re.claim_id, re.original_claim_id,
+                        re.source_group_id AS recorded_group_id,
+                        c.claim_id AS live_claim_id,
+                        c.claim_key, c.claim_value, c.stance, c.context_key,
+                        e.identity_id, e.subject_id, e.interaction_type,
+                        s.group_id AS live_group_id,
+                        g.independence_status
+                    FROM revision_evidence AS re
+                    LEFT JOIN claims AS c ON c.claim_id = re.claim_id
+                    LEFT JOIN experiences AS e
+                        ON e.experience_id = c.experience_id
+                    LEFT JOIN evidence_sources AS s
+                        ON s.identity_id = e.identity_id
+                       AND s.source_id = e.source_id
+                    LEFT JOIN evidence_source_groups AS g
+                        ON g.identity_id = s.identity_id
+                       AND g.group_id = s.group_id
+                    WHERE re.revision_id = ?
+                    """,
+                    (revision_id,),
+                ).fetchall()
+
+                groups = set()
+
+                if not links:
+                    reason = "The proposal has no retained evidence links."
+
+                for link in links:
+                    if (
+                        link["claim_id"] is None
+                        or link["live_claim_id"] != link["original_claim_id"]
+                    ):
+                        reason = "A supporting evidence claim was deleted."
+                        break
+
+                    if (
+                        link["identity_id"] != revision["identity_id"]
+                        or link["subject_id"] is not None
+                        or link["claim_key"] != claim_key
+                        or link["context_key"] != "global_personality"
+                        or link["interaction_type"].strip().casefold()
+                            != revision["interaction_type"].strip().casefold()
+                        or link["live_group_id"] != link["recorded_group_id"]
+                        or link["independence_status"] != "independent"
+                    ):
+                        reason = "A supporting evidence source no longer meets the proposal requirements."
+                        break
+
+                    value = link["claim_value"].strip().casefold()
+                    stance = link["stance"]
+
+                    if value not in {"increase", "decrease"} or stance not in {
+                        "supports", "refutes"
+                    }:
+                        reason = "A supporting evidence claim is no longer valid directional evidence."
+                        break
+
+                    effective = value if stance == "supports" else (
+                        "decrease" if value == "increase" else "increase"
+                    )
+
+                    if effective != direction:
+                        reason = "A linked claim no longer supports the proposed direction."
+                        break
+
+                    groups.add(link["live_group_id"])
+
+                if reason is None and len(groups) < 2:
+                    reason = "Fewer than two independent source groups remain."
+
+            # Check all current evidence for the same proposition, including
+            # evidence added after the proposal was created.
+            if reason is None:
+                current_claims = conn.execute(
+                    """
+                    SELECT c.claim_value, c.stance
+                    FROM claims AS c
+                    JOIN experiences AS e
+                        ON e.experience_id = c.experience_id
+                    WHERE e.identity_id = ?
+                      AND e.subject_id IS NULL
+                      AND c.claim_key = ?
+                      AND c.context_key = 'global_personality'
+                      AND lower(trim(e.interaction_type)) = lower(trim(?))
+                    """,
+                    (
+                        revision["identity_id"],
+                        claim_key,
+                        revision["interaction_type"],
+                    ),
+                ).fetchall()
+
+                for claim in current_claims:
+                    value = claim["claim_value"].strip().casefold()
+                    stance = claim["stance"]
+
+                    if value not in {"increase", "decrease"}:
+                        reason = "The current proposition contains unsupported directional evidence."
+                        break
+
+                    if stance == "uncertain":
+                        continue
+                    if stance not in {"supports", "refutes"}:
+                        reason = "The current proposition contains an invalid evidence stance."
+                        break
+
+                    effective = value if stance == "supports" else (
+                        "decrease" if value == "increase" else "increase"
+                    )
+
+                    if effective != direction:
+                        reason = "New opposing evidence now conflicts with this proposal."
+                        break
+
+            if reason is not None:
+                invalidate(reason)
+            else:
+                traits[trait] = proposed
+
+                conn.execute(
+                    """
+                    UPDATE personality_profiles
+                    SET traits_json = ?, revision = revision + 1,
+                        updated_at = ?
+                    WHERE identity_id = ?
+                    """,
+                    (_json(traits), now, revision["identity_id"]),
+                )
+
+                conn.execute(
+                    "UPDATE identities SET updated_at = ? WHERE identity_id = ?",
+                    (now, revision["identity_id"]),
+                )
+
+                conn.execute(
+                    """
+                    UPDATE personality_revisions
+                    SET status = 'accepted',
+                        decided_at = ?, decision_reason = ?
+                    WHERE revision_id = ? AND status = 'pending'
+                    """,
+                    (now, decision_reason, revision_id),
+                )
+
+        return self.get_personality_revision(revision_id)
+
+    def reject_personality_revision(
+        self, revision_id: str, decision_reason: str
+    ) -> dict:
+        revision_id = _validate_identifier(revision_id, "revision_id")
+        if not isinstance(decision_reason, str) or not decision_reason.strip():
+            raise ValueError("A non-empty decision_reason is required.")
+        decision_reason = decision_reason.strip()
+        if len(decision_reason) > 2000:
+            raise ValueError("decision_reason cannot exceed 2000 characters.")
+
+        now = _now()
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            revision = conn.execute(
+                "SELECT status FROM personality_revisions WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()
+
+            if revision is None:
+                raise KeyError(f"Unknown personality revision: {revision_id}")
+            if revision["status"] != "pending":
+                raise ValueError(
+                    f"Personality revision is not pending: {revision['status']}"
+                )
+
+            conn.execute(
+                """
+                UPDATE personality_revisions
+                SET status = 'rejected',
+                    decided_at = ?, decision_reason = ?
+                WHERE revision_id = ? AND status = 'pending'
+                """,
+                (now, decision_reason, revision_id),
+            )
+
+        return self.get_personality_revision(revision_id)
+
     def update_personality_profile(
         self,
         identity_id: str,
@@ -1563,6 +2420,8 @@ class IdentityStore:
         now = _now()
 
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
             row = conn.execute(
                 """
                 SELECT traits_json, descriptors_json
@@ -1577,6 +2436,21 @@ class IdentityStore:
 
             current_traits = json.loads(row["traits_json"])
             current_descriptors = json.loads(row["descriptors_json"])
+
+            conn.execute(
+                """
+                UPDATE personality_revisions
+                SET status = 'invalidated',
+                    decided_at = ?,
+                    decision_reason = ?
+                WHERE identity_id = ? AND status = 'pending'
+                """,
+                (
+                    now,
+                    "The personality profile changed after this proposal was created.",
+                    identity_id,
+                ),
+            )
 
             if validated_traits is not None:
                 current_traits.update(validated_traits)
