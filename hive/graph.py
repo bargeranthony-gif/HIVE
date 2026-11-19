@@ -247,9 +247,8 @@ def _relationships_for_file(repository_id: int, relative_path: str, direction: s
         raise ValueError(f"Unsupported graph direction: {direction}")
 
     column = columns[direction]
-    initialize_graph(path)
 
-    with connect(path) as conn:
+    with connect(path, readonly=True) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -296,10 +295,8 @@ def dependents_for_file(repository_id: int, relative_path: str, path: Path | Non
 
 
 def show_graph(repository_id: int, path: Path | None = None):
-    """Return stored relationships for one repository."""
-    initialize_graph(path)
-
-    with connect(path) as conn:
+    """Return stored relationships for one repository without schema writes."""
+    with connect(path, readonly=True) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -320,10 +317,8 @@ def show_graph(repository_id: int, path: Path | None = None):
 
 
 def _load_graph_for_traversal(repository_id: int, relative_path: str, path: Path | None = None):
-    """Load and validate a repository graph for traversal."""
-    initialize_graph(path)
-
-    with connect(path) as conn:
+    """Load and validate a repository graph for traversal without schema writes."""
+    with connect(path, readonly=True) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
@@ -447,9 +442,7 @@ def recursive_dependents_for_file(
 
 def circular_dependency_groups(repository_id: int, path: Path | None = None):
     """Return strongly connected groups containing circular imports."""
-    initialize_graph(path)
-
-    with connect(path) as conn:
+    with connect(path, readonly=True) as conn:
         repository = conn.execute(
             "SELECT id FROM repositories WHERE id = ?",
             (repository_id,),
