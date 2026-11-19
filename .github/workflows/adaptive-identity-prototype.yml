@@ -1,0 +1,47 @@
+name: HAIE adaptive identity prototype tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - "phase4/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: haie-prototype-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  combined-regression:
+    name: Combined HIVE and prototype tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install HIVE and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run Core and isolated prototype regression suites
+        run: python -m pytest -q tests .emulation/tests
+
+# This workflow validates code retained under .emulation. A passing test
+# does not authorize promotion of a prototype into HIVE Core or production.
