@@ -60,7 +60,7 @@ def test_informational_database_commands_do_not_write(
     command, hive_environment, capsys
 ):
     home, database, repository_id = hive_environment
-    args = list(command)
+    args = ["--read-only", *command]
     if args[0] == "graph":
         if args[1] == "show" or args[1] == "cycles":
             args.append(str(repository_id))
@@ -94,7 +94,7 @@ def test_status_does_not_create_missing_hive_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_HOME", str(home))
 
     with pytest.raises(SystemExit) as exc:
-        main(["status"])
+        main(["--read-only", "status"])
 
     assert exc.value.code == 1
     assert not home.exists()
@@ -110,3 +110,24 @@ def test_version_does_not_create_hive_home(monkeypatch, tmp_path, capsys):
     assert exc.value.code == 0
     assert "HIVE " in capsys.readouterr().out
     assert not home.exists()
+
+
+
+def test_status_preserves_initialization_behavior_without_read_only_flag(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / "default-home"
+    monkeypatch.setenv("HIVE_HOME", str(home))
+
+    main(["status"])
+
+    assert (home / "hive.db").is_file()
+    assert (home / "logs" / "hive.log").is_file()
+    assert "Repositories: 0" in capsys.readouterr().out
+
+
+def test_read_only_flag_is_rejected_for_mutating_commands():
+    with pytest.raises(SystemExit) as exc:
+        main(["--read-only", "repo", "add", "https://github.com/example/repo"])
+
+    assert exc.value.code == 2
