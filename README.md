@@ -102,3 +102,21 @@ The browser worker selects `.venv-browser-legacy` automatically when it
 exists. `HIVE_BROWSER_PYTHON` can be set to override that interpreter.
 Do not install the browser extra into the main HIVE environment when using
 this isolated browser configuration.
+
+
+## Read-only inventory and status
+
+Use the global `--read-only` option before a supported status or inventory
+command to guarantee that the command does not initialize HIVE state, create
+log files, or write to SQLite. The database must already exist:
+
+```bash
+hive --read-only status
+hive --read-only repo list
+hive --read-only capability list
+hive --read-only graph show 1
+```
+
+Without `--read-only`, existing command behavior is preserved, including
+normal initialization and logging. The option is rejected for commands that
+can modify state.
