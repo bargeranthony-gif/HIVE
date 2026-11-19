@@ -7,6 +7,7 @@ from . import __version__
 from .browser import browser_status, install_browser, inspect_url, browser_python
 from .ai import ask, get_status
 from .db import initialize, connect
+from .config import database_path
 from .logging_setup import configure_logging
 from .repositories import add_repository, list_repositories
 from .capabilities import add_capability, list_capabilities
@@ -164,17 +165,63 @@ def build_parser():
     return parser
 
 
+def _is_read_only_command(args) -> bool:
+    """Return whether a parsed command is guaranteed not to mutate HIVE state."""
+    if args.command in {None, "status"}:
+        return True
+    if args.command == "browser" and args.browser_command == "status":
+        return True
+    if args.command == "ai" and args.ai_command == "status":
+        return True
+    if args.command == "repo" and args.repo_command == "list":
+        return True
+    if args.command == "capability" and args.cap_command == "list":
+        return True
+    if args.command == "graph" and args.graph_command in {
+        "show",
+        "dependencies",
+        "dependents",
+        "recursive-dependencies",
+        "recursive-dependents",
+        "cycles",
+    }:
+        return True
+    return False
+
+
+def _requires_existing_database(args) -> bool:
+    """Return whether a read-only command queries the local SQLite registry."""
+    if args.command in {"status", "repo", "capability"}:
+        return args.command == "status" or (
+            args.command == "repo" and args.repo_command == "list"
+        ) or (
+            args.command == "capability" and args.cap_command == "list"
+        )
+    return args.command == "graph" and _is_read_only_command(args)
+
+
 def main(argv=None):
-    configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    read_only = _is_read_only_command(args)
+    if not read_only:
+        configure_logging()
+
+    if read_only and _requires_existing_database(args):
+        db_path = database_path(create_parent=False)
+        if not db_path.is_file():
+            parser.exit(
+                1,
+                f"HIVE database not initialized: {db_path}. Run 'hive init' first.\\n",
+            )
 
     if args.command == "init":
         print(f"HIVE database initialized: {initialize()}")
 
     elif args.command == "status":
-        path = initialize()
-        with connect() as c:
+        path = database_path(create_parent=False)
+        with connect(readonly=True) as c:
             repos = c.execute(
                 "SELECT COUNT(*) FROM repositories"
             ).fetchone()[0]
@@ -271,7 +318,6 @@ def main(argv=None):
         )
 
     elif args.command == "repo" and args.repo_command == "list":
-        initialize()
         rows = list_repositories()
 
         if not rows:
@@ -317,7 +363,6 @@ def main(argv=None):
             parser.error(str(exc))
 
     elif args.command == "capability" and args.cap_command == "list":
-        initialize()
         rows = list_capabilities()
 
         if not rows:
@@ -346,7 +391,6 @@ def main(argv=None):
             parser.error(str(exc))
 
     elif args.command == "graph" and args.graph_command == "show":
-        initialize()
         try:
             rows = show_graph(args.repository_id)
 
@@ -372,7 +416,6 @@ def main(argv=None):
         "recursive-dependents",
         "cycles",
     ):
-        initialize()
         try:
             if args.graph_command == "dependencies":
                 rows = dependencies_for_file(
