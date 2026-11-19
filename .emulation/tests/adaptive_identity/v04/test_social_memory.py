@@ -1,3 +1,4 @@
+import sqlite3
 import pytest
 
 from ._load_engine import _load_engine
@@ -39,7 +40,7 @@ def test_schema_v1_migrates_without_losing_identity(
             "SELECT version FROM haie_schema"
         ).fetchone()["version"]
 
-    assert version == 3
+    assert version == 5
 
 
 def test_schema_v2_migrates_and_preserves_existing_data(
@@ -118,7 +119,7 @@ def test_schema_v2_migrates_and_preserves_existing_data(
             profile["descriptors_json"]
         )
 
-    assert version == 3
+    assert version == 5
 
 
 def test_relationship_is_scoped_to_one_identity(store):
@@ -316,14 +317,14 @@ def test_duplicate_memory_id_is_rejected(store):
         "preference", "Likes coffee."
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.record_social_memory(
             "memory-1", "hive-1", "person-1",
             "preference", "Likes tea."
         )
 
 
-def test_v3_migration_failure_rolls_back_all_schema_changes(
+def test_v5_migration_failure_rolls_back_all_schema_changes(
     tmp_path, engine_module
 ):
     import sqlite3
@@ -333,7 +334,7 @@ def test_v3_migration_failure_rolls_back_all_schema_changes(
     first.create_identity("hive-1", "HIVE")
 
     with first._connect() as conn:
-        # Reconstruct a genuine v2 database before injecting the failure.
+        # Reconstruct a genuine v2 database before injecting a v5 failure.
         conn.execute("DROP TABLE claims")
         conn.execute("DROP TABLE experiences")
         conn.execute("DROP TABLE evidence_sources")
@@ -341,11 +342,11 @@ def test_v3_migration_failure_rolls_back_all_schema_changes(
         conn.execute("DROP TABLE evidence_source_groups")
         conn.execute("UPDATE haie_schema SET version = 2")
         conn.execute("""
-            CREATE TRIGGER reject_v3_version
+            CREATE TRIGGER reject_v5_version
             BEFORE UPDATE OF version ON haie_schema
-            WHEN NEW.version = 3
+            WHEN NEW.version = 5
             BEGIN
-                SELECT RAISE(ABORT, 'forced migration failure');
+                SELECT RAISE(ABORT, 'forced v5 migration failure');
             END
         """)
 

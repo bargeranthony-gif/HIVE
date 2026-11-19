@@ -1,6 +1,8 @@
 # HAIE v0.4 — Unified Adaptive Identity
 
-Status: Experimental implementation. Phases 1-3 implemented and tested. Not integrated into HIVE Core.
+Status: Experimental implementation. Phases 1-4 implemented and reviewed. Phase 5, unified expression, is next. Not integrated into HIVE Core.
+
+Verification: 119 HAIE v0.4 tests passed; 339 combined HIVE Core and HAIE tests passed.
 
 ## Purpose
 
@@ -65,14 +67,34 @@ It must never modify:
 
 Personality and social memory influence expression, not authorization.
 
-## Development sequence
+## Development phases
 
-1. Define and validate the unified identity model.
-2. Design the relationship and social memory schema.
-3. Design the situational context representation.
-4. Build the unified expression composer.
-5. Connect evaluated experiences to owner-reviewed personality proposals.
-6. Add correction, forgetting, export, and privacy controls.
-7. Test continuity across people and situations.
+1. Foundation — identity, personality profile, validation, and persistence.
+2. Social memory — relationships, categorized memories, provenance,
+   certainty, correction, and deletion.
+3. Evidence — experience and claim storage, source independence,
+   contradiction-aware evaluation, and provenance.
+4. Personality development — evidence-backed revision proposals,
+   transactional approval and rejection, and proposal invalidation.
+5. Unified expression — transient situational context and a pure
+   expression composer using the canonical API:
+
+   `compose_expression(personality, relationship_memories, situation, objective)`
+
+6. Review — privacy, deletion, provenance, regression testing, and
+   documentation of limitations.
+
+Phases 1-4 are implemented and reviewed. Phase 5 is the next development
+phase. Phase 6 follows implementation.
+
+## Phase 4 authorization boundary
+
+HAIE can validate proposals and record acceptance or rejection decisions.
+Its acceptance method does not authenticate the owner. HIVE's control
+layer must enforce owner authentication and authorization before invoking
+that method.
+
+HAIE cannot grant itself authority or modify HIVE governance, security
+boundaries, or owner controls.
 
 No production integration is authorized by this specification.

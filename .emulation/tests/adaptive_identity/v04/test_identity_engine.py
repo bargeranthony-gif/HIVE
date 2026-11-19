@@ -1,3 +1,4 @@
+import sqlite3
 import pytest
 
 from ._load_engine import _load_engine
@@ -94,7 +95,7 @@ def test_multiple_contexts_do_not_create_multiple_identities(store):
 def test_duplicate_identity_is_rejected(store):
     store.create_identity("hive-1", "HIVE")
 
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.create_identity("hive-1", "Another HIVE")
 
 
