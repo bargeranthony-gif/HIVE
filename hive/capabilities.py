@@ -101,7 +101,8 @@ def add_capability(
 
 
 def list_capabilities() -> list[dict]:
-    with connect() as conn:
+    """List capability records without opening SQLite for writes."""
+    with connect(readonly=True) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -135,7 +136,7 @@ def get_capabilities(repository_id: int | None = None) -> list[CapabilityRecord]
 
     query += " ORDER BY id"
 
-    with connect() as conn:
+    with connect(readonly=True) as conn:
         rows = conn.execute(query, params).fetchall()
 
     return [
