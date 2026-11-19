@@ -44,6 +44,16 @@ metadata; it does not clone or execute downloaded code.
 
 HIVE must not promote a claim to a verified level without recorded evidence.
 
+## Local AI model identifier
+
+The HIVE provider sends the value of `HIVE_LLM_MODEL` in OpenAI-compatible
+chat requests and checks the server's `/v1/models` response when running
+`hive ai status`. The advertised model ID must match that configured value.
+The universal installer sets the llama.cpp server alias to the same model
+filename so the generated launchers and HIVE configuration agree. If you
+start llama.cpp manually, use `--alias` with the configured
+`HIVE_LLM_MODEL` value.
+
 ## Data location
 Default: `~/.hive/hive.db`. Set `HIVE_HOME` to move HIVE state, for example:
 `export HIVE_HOME="/path/to/external-ssd/HIVE"`
