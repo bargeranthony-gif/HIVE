@@ -15,5 +15,7 @@ def hive_home(*, create: bool = True) -> Path:
 
 def database_path(*, create_parent: bool = True) -> Path:
     return hive_home(create=create_parent) / "hive.db"
+
+
 def log_path() -> Path:
     return hive_home() / "logs" / "hive.log"
