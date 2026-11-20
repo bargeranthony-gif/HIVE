@@ -1,0 +1,1 @@
+"""HIVE Core contract foundation."""
